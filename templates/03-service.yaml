@@ -106,11 +106,15 @@ Resources:
       Port: 80
       Protocol: HTTP
       DefaultActions:
-        - Type: redirect
-          RedirectConfig:
-            Protocol: HTTPS
-            Port: "443"
-            StatusCode: HTTP_301
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      # DefaultActions:
+      #   - Type: redirect
+      #     RedirectConfig:
+      #       Protocol: HTTPS
+      #       Port: "443"
+      #       StatusCode: HTTP_301
+            
 
   # HttpsListener:
   #   Type: AWS::ElasticLoadBalancingV2::Listener
