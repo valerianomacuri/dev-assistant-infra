@@ -27,27 +27,36 @@ Internet ──HTTPS:443──> ALB (público) ──HTTP:3000──> ECS Fargat
   `JWT_SECRET`, `DATABASE_URL`) van en **SSM Parameter Store** (SecureString,
   gratis). No se usa Secrets Manager.
 
-## Stacks (3 capas)
+## Stacks (4 capas)
 
-Se despliegan en orden; se enlazan con `Export`/`ImportValue`. **RDS no es un
-stack** — se crea por consola (ver más abajo).
+Se enlazan con `Export`/`ImportValue`. **RDS no es un stack** — se crea por consola
+(ver más abajo). El CI/CD del **infra** y el del **backend** están **separados** en
+dos stacks distintos: `00-cicd-infra` (bootstrap **manual**) y `02-cicd-backend`
+(lo gestiona el CI).
 
-| # | Plantilla | Qué crea |
-|---|-----------|----------|
-| 1 | `templates/01-network.yaml` | VPC `10.20.0.0/16`, 2 subredes públicas (2 AZ), Internet Gateway y rutas, y 2 Security Groups (`alb-sg`, `app-sg`) encadenados. |
-| 2 | `templates/02-cicd.yaml` | Repositorio **ECR**, proveedor **OIDC** de GitHub y el **rol IAM** que asume GitHub Actions para publicar imágenes y desplegar en ECS. |
-| 3 | `templates/03-service.yaml` | Certificado **ACM**, **ALB** (HTTP→HTTPS + WS), **cluster ECS**, **task definition**, **servicio Fargate**, roles de ejecución/tarea y log group. |
+| Plantilla | Stack | Despliega | Qué crea |
+|-----------|-------|-----------|----------|
+| `templates/00-cicd-infra.yaml` | `dev-assistant-cicd-infra` | **Manual** (bootstrap) | Proveedor **OIDC** de GitHub (único por cuenta) y el **`InfraDeployRole`** que asume el CI de infra. Exporta `OidcProviderArn`. |
+| `templates/01-network.yaml` | `dev-assistant-network` | CI | VPC `10.20.0.0/16`, 2 subredes públicas (2 AZ), Internet Gateway y rutas, y 2 Security Groups (`alb-sg`, `app-sg`) encadenados. |
+| `templates/02-cicd-backend.yaml` | `dev-assistant-cicd-backend` | CI | Repositorio **ECR** y el **`DeployRole`** que asume el CI del backend para publicar imágenes y desplegar en ECS. Importa `OidcProviderArn`. |
+| `templates/03-service.yaml` | `dev-assistant-service` | CI | Certificado **ACM**, **ALB** (HTTP→HTTPS + WS), **cluster ECS**, **task definition**, **servicio Fargate**, roles de ejecución/tarea y log group. |
 
 ### Recursos clave por stack
 
+- **00-cicd-infra** (bootstrap manual): crea el **proveedor OIDC** de GitHub y el
+  `InfraDeployRole`, que confía en `repo:<org>/dev-assistant-infra:*`. Exporta
+  `OidcProviderArn` para que el stack `cicd-backend` lo reutilice. Se despliega a
+  mano una sola vez porque define el propio rol que usa el CI (ver _Puesta en
+  marcha_). El proveedor OIDC es **único por cuenta**: este stack asume que la
+  cuenta aún no tiene uno de GitHub.
 - **01-network**: la decisión de costo está aquí — Fargate vive en las subredes
   **públicas** (`MapPublicIpOnLaunch`) y sale a Internet por el IGW, así no hace
   falta NAT Gateway (~US$32/mes). `app-sg` solo deja entrar al ALB. El **RDS no
   está aquí**: trae su propio subnet group y security group creados a mano (ver
   _Crear RDS_).
-- **02-cicd**: el rol de deploy confía en `repo:<org>/<repo>:*` vía OIDC. Si la
-  cuenta ya tiene el proveedor OIDC de GitHub, pon `CreateOIDCProvider=false` y
-  pasa `ExistingOIDCProviderArn` (solo puede haber uno por cuenta).
+- **02-cicd-backend**: el `DeployRole` confía en `repo:<org>/dev-assistant-backend:*`
+  vía OIDC y solo puede empujar a su ECR y actualizar el servicio ECS. **Importa**
+  el proveedor OIDC del stack `cicd-infra` (no lo recrea).
 - **03-service**: la tarea corre con `assignPublicIp: ENABLED`,
   `enableExecuteCommand: true` (para depurar con ECS Exec) y circuit breaker con
   rollback. Lee las 4 variables sensibles desde SSM `/dev-assistant/*`. Las
@@ -74,15 +83,21 @@ stack falla con un error de validación (ver _Parámetros de CloudFormation en S
 Región **us-east-1** en todos los comandos.
 
 ```bash
-# 0) Crea /dev-assistant/cfn/GitHubOrg en SSM antes de desplegar el stack cicd
-#    (lo necesita el InfraDeployRole). Ver "Parámetros de CloudFormation en SSM".
+# 0) Crea /dev-assistant/cfn/GitHubOrg en SSM antes de nada (lo necesitan los dos
+#    stacks de CI/CD). Ver "Parámetros de CloudFormation en SSM".
 
-# 1) Red
+# 1) Bootstrap del CI de infra (MANUAL): OIDC + InfraDeployRole. Exporta el OIDC.
+bash scripts/cfn.sh deploy 00-cicd-infra
+
+# 2) Red
 bash scripts/cfn.sh deploy 01-network
 
-# 2) CI/CD (ECR + OIDC + roles)
-bash scripts/cfn.sh deploy 02-cicd
+# 3) CI/CD del backend: ECR + DeployRole (importa el OIDC del paso 1)
+bash scripts/cfn.sh deploy 02-cicd-backend
 ```
+
+> A partir del paso 2 el CI de infra ya puede gestionar `network`, `cicd-backend`
+> y `service`. El stack `00-cicd-infra` queda fuera del CI (es bootstrap manual).
 
 Luego:
 
@@ -95,7 +110,7 @@ Luego:
    _Parámetros de CloudFormation en SSM_. `CertificateArn`/`HostedZoneId` son
    opcionales y van en `params/03-service.json` solo si los necesitas.
 6. **Configura los secrets/variables de GitHub** en el repo del backend
-   (outputs del stack `cicd` + valores del `service`).
+   (output `DeployRoleArn` del stack `cicd-backend` + valores del `service`).
 7. **Primer build de la imagen** (dispara el workflow o build manual) para que
    ECR tenga una imagen que la tarea pueda arrancar; deja `/dev-assistant/cfn/ImageUri`
    apuntando a ella.
@@ -109,7 +124,7 @@ bash scripts/cfn.sh deploy 03-service
 9. **Apunta el dominio al ALB**: crea un registro (alias A en Route53 o CNAME en
    tu DNS) de `api.tudominio.com` → el `AlbDnsName` del output del stack `service`.
 
-> Outputs útiles: `aws cloudformation describe-stacks --stack-name dev-assistant-cicd --query "Stacks[0].Outputs"` (igual para `service`).
+> Outputs útiles: `aws cloudformation describe-stacks --stack-name dev-assistant-cicd-infra --query "Stacks[0].Outputs"` (igual para `dev-assistant-cicd-backend` y `dev-assistant-service`).
 
 ## Paso por consola — Crear RDS PostgreSQL
 
@@ -175,13 +190,14 @@ override). Los **estáticos** (ProjectName, CPU, memoria, modelos, etc.) siguen 
 
 | Parámetro SSM (`Name`) | Stack | Valor |
 |---|---|---|
-| `/dev-assistant/cfn/GitHubOrg` | `cicd` | Org/usuario de GitHub dueño de los repos. |
+| `/dev-assistant/cfn/GitHubOrg` | `cicd-infra`, `cicd-backend` | Org/usuario de GitHub dueño de los repos. |
 | `/dev-assistant/cfn/DomainName` | `service` | Dominio de la API (p.ej. `api.tudominio.com`). |
 | `/dev-assistant/cfn/ImageUri` | `service` | URI completa en ECR, p.ej. `<account>.dkr.ecr.us-east-1.amazonaws.com/dev-assistant-backend:latest`. |
 
-> **Los tres deben existir en SSM antes del deploy del stack que los usa** (`cicd`
-> para `GitHubOrg`; `service` para `DomainName` e `ImageUri`). Si falta el
-> parámetro, CloudFormation devuelve un error de validación.
+> **Los tres deben existir en SSM antes del deploy del stack que los usa**
+> (`GitHubOrg` antes de `cicd-infra`/`cicd-backend`; `DomainName` e `ImageUri`
+> antes de `service`). Si falta el parámetro, CloudFormation devuelve un error de
+> validación.
 
 Créalos en **Systems Manager → Parameter Store → Create parameter** con **Tier**
 Standard y **Type = String** (no son secretos, no uses SecureString). Por CLI:
@@ -207,7 +223,7 @@ aws ssm put-parameter --region us-east-1 --type String \
 
 En **Settings → Secrets and variables → Actions** del repo `dev-assistant-backend`:
 
-- **Secret** `AWS_ROLE_ARN` = output `DeployRoleArn` del stack `cicd`.
+- **Secret** `AWS_ROLE_ARN` = output `DeployRoleArn` del stack `cicd-backend`.
 - **Variables** (Repository variables):
   - `AWS_REGION` = `us-east-1`
   - `ECR_REPOSITORY` = `dev-assistant-backend`
@@ -228,9 +244,13 @@ el **bootstrap/fallback**; el camino normal es por **Pull Request**.
 - **En cada PR**: `cfn-lint` (sintaxis), `checkov` (seguridad, en _soft-fail_),
   `validate-template`, y un **plan** que crea _change sets_ para previsualizar el
   diff de cada stack y lo publica como comentario del PR. **No cambia nada.**
-- **En push a `main`** (o `workflow_dispatch`): despliega los **3 stacks en orden**
-  (`network` → `cicd` → `service`) tras la **aprobación manual** del Environment
-  `production`. Idempotente (`--no-fail-on-empty-changeset`).
+- **En push a `main`** (o `workflow_dispatch`): despliega en orden
+  `network` → `cicd-backend` → `service` tras la **aprobación manual** del
+  Environment `production`. Idempotente (`--no-fail-on-empty-changeset`).
+
+> El stack de bootstrap **`00-cicd-infra` no lo gestiona el CI** (define el propio
+> `InfraDeployRole` que el CI asume): se valida en cada PR pero solo se despliega a
+> mano (ver _Puesta en marcha_).
 
 > El `ImageUri` se lee de `/dev-assistant/cfn/ImageUri` (SSM) y se mantiene en
 > `:latest` (constante), así que redeployar la infra **no revierte** la imagen: el
@@ -249,19 +269,27 @@ Paso a paso para dejar el CI/CD operativo partiendo de un repo local recién
 inicializado (rama `master`, sin remoto, con `.github/` y `scripts/` aún sin
 commitear):
 
-1. **Crea `/dev-assistant/cfn/GitHubOrg` en SSM** (lo necesita el `InfraDeployRole`
-   del stack `cicd`). Ver _Parámetros de CloudFormation en SSM_.
-2. **Bootstrap del rol** — el stack `02-cicd.yaml` define `DeployRole` (backend) e
-   `InfraDeployRole` (CI de infra). Despliega los stacks `network` y `cicd` **a
-   mano** una vez (ver _Orden de despliegue_, pasos 1-2); a partir de ahí el CI ya
-   puede gestionar los stacks. Copia el output `InfraDeployRoleArn`:
+1. **Crea `/dev-assistant/cfn/GitHubOrg` en SSM** (lo necesitan los stacks
+   `cicd-infra` y `cicd-backend`). Ver _Parámetros de CloudFormation en SSM_.
+2. **Bootstrap del CI de infra** — el stack `00-cicd-infra.yaml` define el
+   proveedor OIDC y el `InfraDeployRole` (el rol que asume este CI). Despliégalo
+   **a mano** una vez; a partir de ahí el CI ya puede gestionar `network`,
+   `cicd-backend` y `service`. Copia el output `InfraDeployRoleArn`:
 
    ```bash
+   bash scripts/cfn.sh deploy 00-cicd-infra
    aws cloudformation describe-stacks --region us-east-1 \
-     --stack-name dev-assistant-cicd \
+     --stack-name dev-assistant-cicd-infra \
      --query "Stacks[0].Outputs[?OutputKey=='InfraDeployRoleArn'].OutputValue" \
      --output text
    ```
+
+   > **Migración desde un stack `dev-assistant-cicd` ya existente** (antes de la
+   > separación): los roles (`dev-assistant-github-deploy`,
+   > `dev-assistant-infra-deploy`) y el OIDC son de **nombre único**, así que los
+   > dos stacks nuevos chocarían con el viejo. **Borra primero** el stack
+   > `dev-assistant-cicd` (eso libera el OIDC y los roles) y luego despliega
+   > `00-cicd-infra` + `02-cicd-backend`.
 
 3. **Crea el repo `dev-assistant-infra` en GitHub** (vacío, sin README ni
    `.gitignore` para evitar conflictos al hacer push).
@@ -291,7 +319,8 @@ commitear):
    antes de cada deploy).
 8. **Secrets/Variables de GitHub** de **este repo** (no el del backend), en
    **Settings → Secrets and variables → Actions**:
-   - **Secret** `AWS_DEPLOY_ROLE_ARN` = output `InfraDeployRoleArn` del stack `cicd`.
+   - **Secret** `AWS_DEPLOY_ROLE_ARN` = output `InfraDeployRoleArn` del stack
+     `cicd-infra`.
    - **Variable** `AWS_REGION` = `us-east-1`.
 9. **Prueba el flujo**: abre un PR → corren `validate` + `plan` (comenta el diff de
    los change sets, sin cambiar nada). Haz merge a `main` → corre `deploy` tras la
@@ -339,5 +368,7 @@ HTTPS/WS gestionado).
   instancia `dev-assistant-postgres` —con snapshot final si quieres conservar los
   datos—, luego el DB subnet group `dev-assistant-db-subnets` y el security group
   `dev-assistant-rds-sg`) y después los stacks en orden inverso (`service` →
-  `cicd` → `network`). Si el RDS sigue vivo y usara subredes del stack `network`,
-  su borrado bloquearía la eliminación del stack.
+  `cicd-backend` → `network` → `cicd-infra`). Borra `cicd-infra` al final: el
+  `cicd-backend` importa su export `OidcProviderArn` y CloudFormation no deja
+  eliminar un stack mientras otro consume su export. Si el RDS sigue vivo y usara
+  subredes del stack `network`, su borrado bloquearía la eliminación del stack.

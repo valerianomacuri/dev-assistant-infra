@@ -1,8 +1,0 @@
-[
-  { "ParameterKey": "ProjectName", "ParameterValue": "dev-assistant" },
-  { "ParameterKey": "EcrRepositoryName", "ParameterValue": "dev-assistant-backend" },
-  { "ParameterKey": "GitHubRepo", "ParameterValue": "dev-assistant-backend" },
-  { "ParameterKey": "InfraGitHubRepo", "ParameterValue": "dev-assistant-infra" },
-  { "ParameterKey": "CreateOIDCProvider", "ParameterValue": "true" },
-  { "ParameterKey": "ExistingOIDCProviderArn", "ParameterValue": "" }
-]

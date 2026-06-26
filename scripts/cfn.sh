@@ -6,7 +6,9 @@
 #                                       lo vuelca y lo borra. No cambia nada.
 #   scripts/cfn.sh deploy   <slug>      Despliega el stack (idempotente).
 #
-# <slug> es el nombre base de template/params: 01-network | 02-cicd | 03-service.
+# <slug> es el nombre base de template/params:
+#   00-cicd-infra  (bootstrap MANUAL: OIDC + InfraDeployRole; el CI no lo toca)
+#   01-network | 02-cicd-backend | 03-service  (los gestiona el CI)
 # Los params ESTÁTICOS van en params/*.json. Los específicos de cuenta/entorno
 # (GitHubOrg, DomainName, ImageUri) los resuelve CloudFormation directamente desde
 # SSM Parameter Store (parámetros de tipo AWS::SSM::Parameter::Value en los
@@ -16,20 +18,21 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT="${PROJECT_NAME:-dev-assistant}"
-SLUGS=(01-network 02-cicd 03-service)
+SLUGS=(00-cicd-infra 01-network 02-cicd-backend 03-service)
 
 # Mapea slug -> nombre de stack y capabilities requeridas.
 stack_name() {
   case "$1" in
-    01-network) echo "${PROJECT}-network" ;;
-    02-cicd)    echo "${PROJECT}-cicd" ;;
-    03-service) echo "${PROJECT}-service" ;;
+    00-cicd-infra)   echo "${PROJECT}-cicd-infra" ;;
+    01-network)      echo "${PROJECT}-network" ;;
+    02-cicd-backend) echo "${PROJECT}-cicd-backend" ;;
+    03-service)      echo "${PROJECT}-service" ;;
     *) echo "slug desconocido: $1" >&2; return 1 ;;
   esac
 }
 stack_caps() {
   case "$1" in
-    02-cicd|03-service) echo "CAPABILITY_NAMED_IAM" ;;
+    00-cicd-infra|02-cicd-backend|03-service) echo "CAPABILITY_NAMED_IAM" ;;
     *) echo "" ;;
   esac
 }

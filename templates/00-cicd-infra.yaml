@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant — CI/CD del INFRA (bootstrap). Proveedor OIDC de GitHub (único por
+  cuenta) y el rol que GitHub Actions del repo de infra asume (sin llaves
+  estáticas) para validar y desplegar los stacks de CloudFormation. Es un stack de
+  bootstrap: se despliega A MANO una vez porque define el propio rol que usa el CI;
+  el CI no se gestiona a sí mismo.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+  GitHubOrg:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /dev-assistant/cfn/GitHubOrg
+    Description: >
+      Organización o usuario de GitHub dueño de los repos. Se resuelve desde SSM
+      Parameter Store; crea /dev-assistant/cfn/GitHubOrg antes de desplegar.
+  InfraGitHubRepo:
+    Type: String
+    Default: dev-assistant-infra
+    Description: >
+      Repositorio de infraestructura (CloudFormation) en GitHub. Su GitHub
+      Actions asume InfraDeployRole para validar y desplegar los stacks.
+
+Resources:
+  # Único por cuenta. Este stack de bootstrap se despliega una sola vez, así que
+  # siempre crea el proveedor (la cuenta no debe tener ya uno de GitHub).
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  # Rol que asume GitHub Actions del repo de INFRA para desplegar los stacks de
+  # CloudFormation (network/cicd-backend/service). Es necesariamente potente:
+  # gestiona red, ALB, ECS, ACM, logs, ECR y roles IAM nombrados. Se acota por
+  # Resource al prefijo del proyecto donde el servicio lo permite; servicios cuyo
+  # ARN no admite un patrón útil (ec2, elb, acm) quedan en "*".
+  InfraDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-infra-deploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${InfraGitHubRepo}:*"
+      Policies:
+        - PolicyName: cloudformation-stacks
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Gestión de los stacks del proyecto + change sets (preview en PR).
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStacks
+                  - cloudformation:ListStackResources
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+        - PolicyName: infra-resources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Recursos de los stacks gestionados por el CI. ec2/elb/acm no admiten
+              # un patrón de ARN útil para estas acciones de create/describe, por
+              # eso van en "*".
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - ecs:*
+                  - acm:*
+                  - route53:GetHostedZone
+                  - route53:ListHostedZones
+                  - route53:ChangeResourceRecordSets
+                  - route53:GetChange
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:TagResource
+                  - logs:ListTagsForResource
+                  - ecr:CreateRepository
+                  - ecr:DeleteRepository
+                  - ecr:DescribeRepositories
+                  - ecr:PutLifecyclePolicy
+                  - ecr:GetLifecyclePolicy
+                  - ecr:SetRepositoryPolicy
+                  - ecr:TagResource
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                Resource: "*"
+        - PolicyName: iam-named-roles
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Los stacks crean roles nombrados (CAPABILITY_NAMED_IAM). Acotado al
+              # prefijo del proyecto. El OIDC provider NO está aquí: lo crea este
+              # stack de bootstrap (manual), no el CI.
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*"
+
+Outputs:
+  InfraDeployRoleArn:
+    Description: ARN del rol para el secreto AWS_DEPLOY_ROLE_ARN del repo de infra.
+    Value: !GetAtt InfraDeployRole.Arn
+  OidcProviderArn:
+    Description: >
+      ARN del proveedor OIDC de GitHub. Lo importa el stack cicd-backend para el
+      DeployRole del backend.
+    Value: !Ref GitHubOIDCProvider
+    Export:
+      Name: !Sub "${ProjectName}-OidcProviderArn"

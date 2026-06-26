@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant-backend — CI/CD del BACKEND. Repositorio ECR para la imagen y rol
+  IAM que GitHub Actions del repo backend asume (sin llaves estáticas) para
+  publicar en ECR y desplegar en ECS. Lo despliega el CI de infra. El proveedor
+  OIDC lo crea el stack de bootstrap 00-cicd-infra; aquí solo se importa su ARN.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+  EcrRepositoryName:
+    Type: String
+    Default: dev-assistant-backend
+  GitHubOrg:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /dev-assistant/cfn/GitHubOrg
+    Description: >
+      Organización o usuario de GitHub dueño del repo del backend. Se resuelve
+      desde SSM Parameter Store (/dev-assistant/cfn/GitHubOrg).
+  GitHubRepo:
+    Type: String
+    Default: dev-assistant-backend
+    Description: Nombre del repositorio del backend en GitHub.
+
+Resources:
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref EcrRepositoryName
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Conservar solo las ultimas 10 imagenes",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-github-deploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              # El proveedor OIDC vive en el stack de bootstrap 00-cicd-infra.
+              Federated:
+                Fn::ImportValue: !Sub "${ProjectName}-OidcProviderArn"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+      Policies:
+        - PolicyName: ecr-push
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !GetAtt EcrRepository.Arn
+        - PolicyName: ecs-deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DescribeTaskDefinition
+                  - ecs:DescribeServices
+                Resource: "*"
+              - Effect: Allow
+                Action: ecs:UpdateService
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ProjectName}/${ProjectName}-backend"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+
+Outputs:
+  DeployRoleArn:
+    Description: ARN del rol para el secreto AWS_ROLE_ARN del repo del backend.
+    Value: !GetAtt DeployRole.Arn
+  EcrRepositoryName:
+    Value: !Ref EcrRepository
+  EcrRepositoryUri:
+    Description: URI base del repo ECR (sin tag).
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}"
