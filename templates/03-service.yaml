@@ -10,12 +10,12 @@ Parameters:
   ProjectName:
     Type: String
     Default: dev-assistant
-  DomainName:
-    Type: String
-    Default: api.leovaleriano.click
-    Description: >
-      Domain the API will serve once HTTPS + custom domain is enabled (roadmap).
-      Currently unused at runtime; the API is reached over HTTP via the ALB DNS.
+  # DomainName:
+  #   Type: String
+  #   Default: api.leovaleriano.click
+  #   Description: >
+  #     Domain the API will serve once HTTPS + custom domain is enabled (roadmap).
+  #     Currently unused at runtime; the API is reached over HTTP via the ALB DNS.
   # CertificateArn:
   #   Type: String
   #   Default: ""
