@@ -231,18 +231,18 @@ Resources:
               Value: !Ref AnthropicModel
             - Name: OPENAI_EMBEDDING_MODEL
               Value: !Ref OpenAiEmbeddingModel
-          # Secrets:
-            # DATABASE_URL is an SSM SecureString. RDS is created in the console
-            # with its own network (manual subnet group + SG), outside the stacks;
-            # the endpoint/password go into this parameter.
-            # - Name: DATABASE_URL
-            #   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
-            # - Name: ANTHROPIC_API_KEY
-            #   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/ANTHROPIC_API_KEY"
-            # - Name: OPENAI_API_KEY
-            #   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/OPENAI_API_KEY"
-            # - Name: JWT_SECRET
-            #   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/JWT_SECRET"
+          Secrets:
+            DATABASE_URL is an SSM SecureString. RDS is created in the console
+            with its own network (manual subnet group + SG), outside the stacks;
+            the endpoint/password go into this parameter.
+            - Name: DATABASE_URL
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
+            - Name: ANTHROPIC_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/ANTHROPIC_API_KEY"
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/OPENAI_API_KEY"
+            - Name: JWT_SECRET
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/JWT_SECRET"
           LogConfiguration:
             LogDriver: awslogs
             Options:
