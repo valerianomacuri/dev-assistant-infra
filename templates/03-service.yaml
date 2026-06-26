@@ -231,7 +231,7 @@ Resources:
               Value: !Ref AnthropicModel
             - Name: OPENAI_EMBEDDING_MODEL
               Value: !Ref OpenAiEmbeddingModel
-          Secrets:
+          # Secrets:
             # DATABASE_URL is an SSM SecureString. RDS is created in the console
             # with its own network (manual subnet group + SG), outside the stacks;
             # the endpoint/password go into this parameter.
