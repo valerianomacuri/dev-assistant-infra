@@ -140,7 +140,7 @@ Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB público (HTTP/HTTPS desde Internet).
+      GroupDescription: ALB publico (HTTP/HTTPS desde Internet).
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp

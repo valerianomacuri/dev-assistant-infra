@@ -222,41 +222,41 @@ Resources:
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
-        - name: !Ref ContainerName
-          image: !Ref ImageUri
-          essential: true
-          portMappings:
-            - containerPort: !Ref ContainerPort
-              protocol: tcp
-          environment:
-            - name: NODE_ENV
-              value: production
-            - name: PORT
-              value: !Sub "${ContainerPort}"
-            - name: CORS_ORIGINS
-              value: !Ref CorsOrigins
-            - name: AWS_REGION
-              value: !Ref AWS::Region
-            - name: S3_REGION
-              value: !Ref AWS::Region
-            - name: ANTHROPIC_MODEL
-              value: !Ref AnthropicModel
-            - name: OPENAI_EMBEDDING_MODEL
-              value: !Ref OpenAiEmbeddingModel
-          secrets:
+        - Name: !Ref ContainerName
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              AppProtocol: http
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: PORT
+              Value: !Sub "${ContainerPort}"
+            - Name: CORS_ORIGINS
+              Value: !Ref CorsOrigins
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: S3_REGION
+              Value: !Ref AWS::Region
+            - Name: ANTHROPIC_MODEL
+              Value: !Ref AnthropicModel
+            - Name: OPENAI_EMBEDDING_MODEL
+              Value: !Ref OpenAiEmbeddingModel
+          Secrets:
             # DATABASE_URL es un SecureString de SSM (la DB se crea a mano por
             # consola; el endpoint/contraseña se ponen en este parámetro).
-            - name: DATABASE_URL
-              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
-            - name: ANTHROPIC_API_KEY
-              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/ANTHROPIC_API_KEY"
-            - name: OPENAI_API_KEY
-              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/OPENAI_API_KEY"
-            - name: JWT_SECRET
-              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/JWT_SECRET"
-          logConfiguration:
-            logDriver: awslogs
-            options:
+            - Name: DATABASE_URL
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
+            - Name: ANTHROPIC_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/ANTHROPIC_API_KEY"
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/OPENAI_API_KEY"
+            - Name: JWT_SECRET
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/JWT_SECRET"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: app
