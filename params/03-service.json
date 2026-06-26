@@ -3,6 +3,5 @@
   { "ParameterKey": "CorsOrigins", "ParameterValue": "*" },
   { "ParameterKey": "AnthropicModel", "ParameterValue": "claude-haiku-4-5" },
   { "ParameterKey": "EcrRepositoryName", "ParameterValue": "dev-assistant-backend" },
-  { "ParameterKey": "ImageTag", "ParameterValue": "latest" },
-  { "ParameterKey": "DomainName", "ParameterValue": "api.leovaleriano.click" }
+  { "ParameterKey": "ImageTag", "ParameterValue": "latest" }
 ]
