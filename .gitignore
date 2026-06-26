@@ -1,0 +1,13 @@
+# Credenciales y parámetros locales con valores reales.
+*.local.json
+.env
+.env.*
+
+# Salidas temporales de la AWS CLI.
+*.out
+packaged-*.yaml
+
+# Editores / SO.
+.vscode/
+.idea/
+.DS_Store

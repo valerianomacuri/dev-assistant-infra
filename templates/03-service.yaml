@@ -1,0 +1,313 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant-backend — Servicio (capa 4/4). Certificado ACM, ALB con HTTPS
+  (WebSockets para socket.io), cluster ECS, task definition y servicio Fargate.
+  La tarea corre en subredes públicas con IP pública (sin NAT) y solo recibe
+  tráfico del ALB. Inyecta los 4 secretos desde SSM Parameter Store.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+  DomainName:
+    Type: String
+    Description: Dominio que servirá la API (p.ej. api.midominio.com).
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN de un certificado ACM ya validado. Déjalo vacío para que el stack cree
+      uno (requiere HostedZoneId para validación DNS automática, o validación
+      manual si tu DNS no está en Route53).
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: >
+      Zona alojada de Route53 del dominio (opcional). Si se indica y el stack
+      crea el certificado, la validación DNS es automática.
+  ImageUri:
+    Type: String
+    Description: URI completa de la imagen en ECR con tag (repo:tag).
+  ContainerName:
+    Type: String
+    Default: app
+    Description: Debe coincidir con la variable CONTAINER_NAME del workflow.
+  ContainerPort:
+    Type: Number
+    Default: 3000
+  TaskCpu:
+    Type: String
+    Default: "512"
+    Description: Unidades de CPU (512 = 0.5 vCPU).
+  TaskMemory:
+    Type: String
+    Default: "1024"
+    Description: Memoria en MB.
+  DesiredCount:
+    Type: Number
+    Default: 1
+  CorsOrigins:
+    Type: String
+    Default: "*"
+    Description: Orígenes CORS permitidos (la URL del frontend desplegado).
+  AnthropicModel:
+    Type: String
+    Default: claude-sonnet-4-6
+  OpenAiEmbeddingModel:
+    Type: String
+    Default: text-embedding-3-small
+
+Conditions:
+  CreateCertificate: !Equals [!Ref CertificateArn, ""]
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, ""]]
+
+Resources:
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: CreateCertificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions: !If
+        - HasHostedZone
+        - - DomainName: !Ref DomainName
+            HostedZoneId: !Ref HostedZoneId
+        - !Ref AWS::NoValue
+
+  # --- Application Load Balancer ---
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - Fn::ImportValue: !Sub "${ProjectName}-AlbSecurityGroupId"
+      Subnets:
+        - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnet1"
+        - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnet2"
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+        # Stickiness para el fallback de long-polling de socket.io.
+        - Key: stickiness.enabled
+          Value: "true"
+        - Key: stickiness.type
+          Value: lb_cookie
+        - Key: stickiness.lb_cookie.duration_seconds
+          Value: "86400"
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: "443"
+            StatusCode: HTTP_301
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !If [CreateCertificate, !Ref Certificate, !Ref CertificateArn]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # --- ECS ---
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ProjectName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-backend"
+      RetentionInDays: 14
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/*"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+
+  # Rol de la tarea: mínimo. Solo ECS Exec (para depurar / correr SQL puntual).
+  # Sin permisos de S3/SQS/Lambda en esta fase.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ecs-exec
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-backend"
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - name: !Ref ContainerName
+          image: !Ref ImageUri
+          essential: true
+          portMappings:
+            - containerPort: !Ref ContainerPort
+              protocol: tcp
+          environment:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: !Sub "${ContainerPort}"
+            - name: CORS_ORIGINS
+              value: !Ref CorsOrigins
+            - name: AWS_REGION
+              value: !Ref AWS::Region
+            - name: S3_REGION
+              value: !Ref AWS::Region
+            - name: ANTHROPIC_MODEL
+              value: !Ref AnthropicModel
+            - name: OPENAI_EMBEDDING_MODEL
+              value: !Ref OpenAiEmbeddingModel
+          secrets:
+            # DATABASE_URL es un SecureString de SSM (la DB se crea a mano por
+            # consola; el endpoint/contraseña se ponen en este parámetro).
+            - name: DATABASE_URL
+              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
+            - name: ANTHROPIC_API_KEY
+              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/ANTHROPIC_API_KEY"
+            - name: OPENAI_API_KEY
+              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/OPENAI_API_KEY"
+            - name: JWT_SECRET
+              valueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/JWT_SECRET"
+          logConfiguration:
+            logDriver: awslogs
+            options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+
+  Service:
+    Type: AWS::ECS::Service
+    # El servicio no puede registrarse en el TG hasta que el listener exista.
+    DependsOn: HttpsListener
+    Properties:
+      ServiceName: !Sub "${ProjectName}-backend"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableExecuteCommand: true
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnet1"
+            - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnet2"
+          SecurityGroups:
+            - Fn::ImportValue: !Sub "${ProjectName}-AppSecurityGroupId"
+      LoadBalancers:
+        - ContainerName: !Ref ContainerName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ClusterName:
+    Description: Variable ECS_CLUSTER del workflow.
+    Value: !Ref Cluster
+  ServiceName:
+    Description: Variable ECS_SERVICE del workflow.
+    Value: !GetAtt Service.Name
+  TaskFamily:
+    Description: Variable ECS_TASK_FAMILY del workflow.
+    Value: !Sub "${ProjectName}-backend"
+  ContainerName:
+    Description: Variable CONTAINER_NAME del workflow.
+    Value: !Ref ContainerName
+  AlbDnsName:
+    Description: DNS del ALB (apunta aquí el registro del dominio).
+    Value: !GetAtt LoadBalancer.DNSName
+  LoadBalancerUrl:
+    Value: !Sub "https://${DomainName}"
