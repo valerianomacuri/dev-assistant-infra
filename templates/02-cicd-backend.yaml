@@ -1,9 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend — CI/CD del BACKEND. Repositorio ECR para la imagen y rol
-  IAM que GitHub Actions del repo backend asume (sin llaves estáticas) para
-  publicar en ECR y desplegar en ECS. Lo despliega el CI de infra. El proveedor
-  OIDC lo crea el stack de bootstrap 00-cicd-infra; aquí solo se importa su ARN.
+  dev-assistant-backend - backend CI/CD: ECR for the image and an IAM role
+  assumed by GitHub Actions via OIDC to push and deploy to ECS. The OIDC provider
+  is created by the 00-cicd-infra bootstrap.
 
 Parameters:
   ProjectName:
@@ -16,12 +15,12 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /dev-assistant/cfn/GitHubOrg
     Description: >
-      Organización o usuario de GitHub dueño del repo del backend. Se resuelve
-      desde SSM Parameter Store (/dev-assistant/cfn/GitHubOrg).
+      GitHub organization or user that owns the backend repo. Resolved from SSM
+      Parameter Store (/dev-assistant/cfn/GitHubOrg).
   GitHubRepo:
     Type: String
     Default: dev-assistant-backend
-    Description: Nombre del repositorio del backend en GitHub.
+    Description: Name of the backend repository on GitHub.
 
 Resources:
   EcrRepository:
@@ -37,7 +36,7 @@ Resources:
             "rules": [
               {
                 "rulePriority": 1,
-                "description": "Conservar solo las ultimas 10 imagenes",
+                "description": "Keep only the last 10 images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
@@ -57,7 +56,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              # El proveedor OIDC vive en el stack de bootstrap 00-cicd-infra.
+              # The OIDC provider lives in the 00-cicd-infra bootstrap stack.
               Federated:
                 Fn::ImportValue: !Sub "${ProjectName}-OidcProviderArn"
             Action: sts:AssumeRoleWithWebIdentity
@@ -106,10 +105,10 @@ Resources:
 
 Outputs:
   DeployRoleArn:
-    Description: ARN del rol para el secreto AWS_ROLE_ARN del repo del backend.
+    Description: Role ARN for the backend repo's AWS_ROLE_ARN secret.
     Value: !GetAtt DeployRole.Arn
   EcrRepositoryName:
     Value: !Ref EcrRepository
   EcrRepositoryUri:
-    Description: URI base del repo ECR (sin tag).
+    Description: Base URI of the ECR repo (without tag).
     Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}"

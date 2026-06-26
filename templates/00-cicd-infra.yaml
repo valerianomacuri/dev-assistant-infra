@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant — CI/CD del INFRA (bootstrap). Proveedor OIDC de GitHub (único por
-  cuenta) y el rol que GitHub Actions del repo de infra asume (sin llaves
-  estáticas) para validar y desplegar los stacks de CloudFormation. Es un stack de
-  bootstrap: se despliega A MANO una vez porque define el propio rol que usa el CI;
-  el CI no se gestiona a sí mismo.
+  dev-assistant - INFRA CI/CD (bootstrap). GitHub OIDC provider (one per account)
+  and the role that the infra repo's GitHub Actions assumes (no static keys) to
+  validate and deploy the CloudFormation stacks. This is a bootstrap stack: it is
+  deployed MANUALLY once because it defines the very role the CI uses; the CI does
+  not manage itself.
 
 Parameters:
   ProjectName:
@@ -14,18 +14,18 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /dev-assistant/cfn/GitHubOrg
     Description: >
-      Organización o usuario de GitHub dueño de los repos. Se resuelve desde SSM
-      Parameter Store; crea /dev-assistant/cfn/GitHubOrg antes de desplegar.
+      GitHub organization or user that owns the repos. Resolved from SSM
+      Parameter Store; create /dev-assistant/cfn/GitHubOrg before deploying.
   InfraGitHubRepo:
     Type: String
     Default: dev-assistant-infra
     Description: >
-      Repositorio de infraestructura (CloudFormation) en GitHub. Su GitHub
-      Actions asume InfraDeployRole para validar y desplegar los stacks.
+      Infrastructure (CloudFormation) repository on GitHub. Its GitHub Actions
+      assumes InfraDeployRole to validate and deploy the stacks.
 
 Resources:
-  # Único por cuenta. Este stack de bootstrap se despliega una sola vez, así que
-  # siempre crea el proveedor (la cuenta no debe tener ya uno de GitHub).
+  # One per account. This bootstrap stack is deployed only once, so it always
+  # creates the provider (the account must not already have a GitHub one).
   GitHubOIDCProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
@@ -33,11 +33,11 @@ Resources:
       ClientIdList:
         - sts.amazonaws.com
 
-  # Rol que asume GitHub Actions del repo de INFRA para desplegar los stacks de
-  # CloudFormation (network/cicd-backend/service). Es necesariamente potente:
-  # gestiona red, ALB, ECS, ACM, logs, ECR y roles IAM nombrados. Se acota por
-  # Resource al prefijo del proyecto donde el servicio lo permite; servicios cuyo
-  # ARN no admite un patrón útil (ec2, elb, acm) quedan en "*".
+  # Role assumed by the INFRA repo's GitHub Actions to deploy the CloudFormation
+  # stacks (network/cicd-backend/service). It is necessarily powerful: it manages
+  # networking, ALB, ECS, ACM, logs, ECR and named IAM roles. It is scoped by
+  # Resource to the project prefix where the service allows it; services whose ARN
+  # does not support a useful pattern (ec2, elb, acm) stay on "*".
   InfraDeployRole:
     Type: AWS::IAM::Role
     Properties:
@@ -59,7 +59,7 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Gestión de los stacks del proyecto + change sets (preview en PR).
+              # Management of the project stacks + change sets (PR preview).
               - Effect: Allow
                 Action:
                   - cloudformation:CreateStack
@@ -82,9 +82,9 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Recursos de los stacks gestionados por el CI. ec2/elb/acm no admiten
-              # un patrón de ARN útil para estas acciones de create/describe, por
-              # eso van en "*".
+              # Resources of the stacks managed by the CI. ec2/elb/acm do not
+              # support a useful ARN pattern for these create/describe actions, so
+              # they stay on "*".
               - Effect: Allow
                 Action:
                   - ec2:*
@@ -115,9 +115,9 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Los stacks crean roles nombrados (CAPABILITY_NAMED_IAM). Acotado al
-              # prefijo del proyecto. El OIDC provider NO está aquí: lo crea este
-              # stack de bootstrap (manual), no el CI.
+              # The stacks create named roles (CAPABILITY_NAMED_IAM). Scoped to the
+              # project prefix. The OIDC provider is NOT here: it is created by this
+              # bootstrap stack (manual), not by the CI.
               - Effect: Allow
                 Action:
                   - iam:CreateRole
@@ -140,12 +140,12 @@ Resources:
 
 Outputs:
   InfraDeployRoleArn:
-    Description: ARN del rol para el secreto AWS_DEPLOY_ROLE_ARN del repo de infra.
+    Description: Role ARN for the infra repo's AWS_DEPLOY_ROLE_ARN secret.
     Value: !GetAtt InfraDeployRole.Arn
   OidcProviderArn:
     Description: >
-      ARN del proveedor OIDC de GitHub. Lo importa el stack cicd-backend para el
-      DeployRole del backend.
+      GitHub OIDC provider ARN. Imported by the cicd-backend stack for the
+      backend's DeployRole.
     Value: !Ref GitHubOIDCProvider
     Export:
       Name: !Sub "${ProjectName}-OidcProviderArn"

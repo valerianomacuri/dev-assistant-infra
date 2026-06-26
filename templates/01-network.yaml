@@ -1,21 +1,19 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend — Red (capa 1/4). VPC con 2 subredes públicas en 2 AZ,
-  Internet Gateway y 2 Security Groups (alb-sg, app-sg). Optimizado para MVP:
-  las tareas Fargate van en subredes públicas con IP pública para tener salida
-  a Internet por el IGW y así evitar el costo de un NAT Gateway. El RDS no forma
-  parte de este stack: se crea por consola con su propia red (subnet group y
-  security group manuales).
+  dev-assistant-backend - Network: VPC with 2 public subnets across 2 AZs,
+  Internet Gateway and Security Groups for the ALB and the app. Fargate uses a
+  public IP for direct egress to the Internet, avoiding a NAT Gateway. RDS is
+  managed outside this stack.
 
 Parameters:
   ProjectName:
     Type: String
     Default: dev-assistant
-    Description: Prefijo para nombres y exports de los recursos.
+    Description: Prefix for resource names and exports.
   VpcCidr:
     Type: String
     Default: 10.20.0.0/16
-    Description: Rango CIDR de la VPC (/16).
+    Description: CIDR range for the VPC (/16).
 
 Resources:
   Vpc:
@@ -41,7 +39,7 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
-  # --- Subredes públicas (ALB + tareas Fargate) ---
+  # --- Public subnets (ALB + Fargate tasks) ---
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -64,7 +62,7 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-public-2"
 
-  # --- Routing público (0.0.0.0/0 -> IGW) ---
+  # --- Public routing (0.0.0.0/0 -> IGW) ---
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -97,14 +95,14 @@ Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB publico (HTTP/HTTPS desde Internet).
+      GroupDescription: Public ALB (HTTP/HTTPS from the Internet).
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-          Description: HTTP (redirige a HTTPS)
+          Description: HTTP (redirects to HTTPS)
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
@@ -117,14 +115,14 @@ Resources:
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Tareas Fargate de la API. Solo el ALB llega al puerto 3000.
+      GroupDescription: Fargate API tasks. Only the ALB can reach port 3000.
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 3000
           ToPort: 3000
           SourceSecurityGroupId: !Ref AlbSecurityGroup
-          Description: Tráfico de la app desde el ALB
+          Description: App traffic from the ALB
       Tags:
         - Key: Name
           Value: !Sub "${ProjectName}-app-sg"

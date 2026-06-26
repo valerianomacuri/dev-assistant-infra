@@ -66,8 +66,12 @@ dos stacks distintos: `00-cicd-infra` (bootstrap **manual**) y `02-cicd-backend`
 
 - AWS CLI v2 configurado (`aws configure`) con un perfil admin en **us-east-1**.
 - `jq` instalado (lo usa `scripts/cfn.sh` para componer los parámetros).
-- Un dominio para la API (p.ej. `api.tudominio.com`). Si está en **Route53**,
-  apunta el `HostedZoneId` para validar el certificado automáticamente.
+- Un dominio para la API (p.ej. `api.tudominio.com`). Para un **dominio
+  personalizado** crea una **zona alojada (hosted zone) en Route53** para ese
+  dominio y delega los nameservers de tu registrador a Route53; luego apunta su
+  `HostedZoneId` para validar el certificado automáticamente. Si prefieres no usar
+  Route53, la validación DNS del certificado ACM es **manual** (añadir el registro
+  CNAME de validación en tu DNS a mano).
 - El repo `dev-assistant-backend` en GitHub (para el OIDC y el CI/CD del backend).
 - **Este repo (`dev-assistant-infra`) también en GitHub**: su CI/CD asume el
   `InfraDeployRole`, cuya confianza OIDC está ligada a
@@ -109,6 +113,11 @@ Luego:
    `/dev-assistant/cfn/ImageUri` en SSM** (`GitHubOrg` ya en el paso 0). Ver
    _Parámetros de CloudFormation en SSM_. `CertificateArn`/`HostedZoneId` son
    opcionales y van en `params/03-service.json` solo si los necesitas.
+   - **Para un dominio personalizado**: crea la **zona alojada de Route53** del
+     dominio **antes** de desplegar el `service` y pon su `HostedZoneId` en
+     `params/03-service.json`. Así el stack crea el certificado ACM y lo valida
+     por DNS automáticamente. Sin Route53, deja `HostedZoneId` vacío y valida el
+     certificado a mano en tu DNS.
 6. **Configura los secrets/variables de GitHub** en el repo del backend
    (output `DeployRoleArn` del stack `cicd-backend` + valores del `service`).
 7. **Primer build de la imagen** (dispara el workflow o build manual) para que
@@ -121,8 +130,10 @@ Luego:
 bash scripts/cfn.sh deploy 03-service
 ```
 
-9. **Apunta el dominio al ALB**: crea un registro (alias A en Route53 o CNAME en
-   tu DNS) de `api.tudominio.com` → el `AlbDnsName` del output del stack `service`.
+9. **Apunta el dominio al ALB**: dentro de la **zona alojada de Route53** del
+   dominio (paso 5), crea un registro **alias A** de `api.tudominio.com` → el
+   `AlbDnsName` del output del stack `service`. Si tu DNS no está en Route53, usa
+   un **CNAME** equivalente en tu proveedor.
 
 > Outputs útiles: `aws cloudformation describe-stacks --stack-name dev-assistant-cicd-infra --query "Stacks[0].Outputs"` (igual para `dev-assistant-cicd-backend` y `dev-assistant-service`).
 
@@ -218,6 +229,11 @@ aws ssm put-parameter --region us-east-1 --type String \
 > quieres validación DNS automática por Route53. (Se quedan como `String` porque un
 > tipo `AWS::SSM::Parameter::Value` exigiría que el parámetro existiera siempre, y
 > SSM no admite valores vacíos.)
+>
+> **Dominio personalizado (camino recomendado)**: crea una **zona alojada en
+> Route53** para tu dominio → pon su `HostedZoneId` en `params/03-service.json` →
+> el stack crea el certificado ACM y lo **valida por DNS automáticamente**, sin
+> pasos manuales.
 
 ## Variables y secretos de GitHub (repo del backend)
 

@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend — Servicio (capa 4/4). Certificado ACM, ALB con HTTPS
-  (WebSockets para socket.io), cluster ECS, task definition y servicio Fargate.
-  La tarea corre en subredes públicas con IP pública (sin NAT) y solo recibe
-  tráfico del ALB. Inyecta los 4 secretos desde SSM Parameter Store.
+  dev-assistant-backend - Service (layer 4/4). ACM certificate, ALB with HTTPS
+  (WebSockets for socket.io), ECS cluster, task definition and Fargate service.
+  The task runs in public subnets with a public IP (no NAT) and only receives
+  traffic from the ALB. Injects the 4 secrets from SSM Parameter Store.
 
 Parameters:
   ProjectName:
@@ -13,49 +13,49 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /dev-assistant/cfn/DomainName
     Description: >
-      Dominio que servirá la API (p.ej. api.midominio.com). Se resuelve desde SSM
+      Domain the API will serve (e.g. api.mydomain.com). Resolved from SSM
       (/dev-assistant/cfn/DomainName).
   CertificateArn:
     Type: String
     Default: ""
     Description: >
-      ARN de un certificado ACM ya validado. Déjalo vacío para que el stack cree
-      uno (requiere HostedZoneId para validación DNS automática, o validación
-      manual si tu DNS no está en Route53).
+      ARN of an already-validated ACM certificate. Leave empty for the stack to
+      create one (requires HostedZoneId for automatic DNS validation, or manual
+      validation if your DNS is not in Route53).
   HostedZoneId:
     Type: String
     Default: ""
     Description: >
-      Zona alojada de Route53 del dominio (opcional). Si se indica y el stack
-      crea el certificado, la validación DNS es automática.
+      Route53 hosted zone of the domain (optional). If provided and the stack
+      creates the certificate, DNS validation is automatic.
   ImageUri:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /dev-assistant/cfn/ImageUri
     Description: >
-      URI completa de la imagen en ECR con tag (repo:tag). Se resuelve desde SSM
+      Full ECR image URI with tag (repo:tag). Resolved from SSM
       (/dev-assistant/cfn/ImageUri).
   ContainerName:
     Type: String
     Default: app
-    Description: Debe coincidir con la variable CONTAINER_NAME del workflow.
+    Description: Must match the workflow's CONTAINER_NAME variable.
   ContainerPort:
     Type: Number
     Default: 3000
   TaskCpu:
     Type: String
     Default: "512"
-    Description: Unidades de CPU (512 = 0.5 vCPU).
+    Description: CPU units (512 = 0.5 vCPU).
   TaskMemory:
     Type: String
     Default: "1024"
-    Description: Memoria en MB.
+    Description: Memory in MB.
   DesiredCount:
     Type: Number
     Default: 1
   CorsOrigins:
     Type: String
     Default: "*"
-    Description: Orígenes CORS permitidos (la URL del frontend desplegado).
+    Description: Allowed CORS origins (the deployed frontend URL).
   AnthropicModel:
     Type: String
     Default: claude-sonnet-4-6
@@ -113,7 +113,7 @@ Resources:
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: "30"
-        # Stickiness para el fallback de long-polling de socket.io.
+        # Stickiness for socket.io's long-polling fallback.
         - Key: stickiness.enabled
           Value: "true"
         - Key: stickiness.type
@@ -187,8 +187,8 @@ Resources:
                   StringEquals:
                     kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
 
-  # Rol de la tarea: mínimo. Solo ECS Exec (para depurar / correr SQL puntual).
-  # Sin permisos de S3/SQS/Lambda en esta fase.
+  # Task role: minimal. Only ECS Exec (to debug / run one-off SQL).
+  # No S3/SQS/Lambda permissions in this phase.
   TaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -250,9 +250,9 @@ Resources:
             - Name: OPENAI_EMBEDDING_MODEL
               Value: !Ref OpenAiEmbeddingModel
           Secrets:
-            # DATABASE_URL es un SecureString de SSM. El RDS se crea por consola
-            # con su propia red (subnet group + SG manuales), fuera de los stacks;
-            # el endpoint/contraseña se ponen en este parámetro.
+            # DATABASE_URL is an SSM SecureString. RDS is created in the console
+            # with its own network (manual subnet group + SG), outside the stacks;
+            # the endpoint/password go into this parameter.
             - Name: DATABASE_URL
               ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
             - Name: ANTHROPIC_API_KEY
@@ -270,7 +270,7 @@ Resources:
 
   Service:
     Type: AWS::ECS::Service
-    # El servicio no puede registrarse en el TG hasta que el listener exista.
+    # The service cannot register in the TG until the listener exists.
     DependsOn: HttpsListener
     Properties:
       ServiceName: !Sub "${ProjectName}-backend"
@@ -302,19 +302,19 @@ Resources:
 
 Outputs:
   ClusterName:
-    Description: Variable ECS_CLUSTER del workflow.
+    Description: Workflow ECS_CLUSTER variable.
     Value: !Ref Cluster
   ServiceName:
-    Description: Variable ECS_SERVICE del workflow.
+    Description: Workflow ECS_SERVICE variable.
     Value: !GetAtt Service.Name
   TaskFamily:
-    Description: Variable ECS_TASK_FAMILY del workflow.
+    Description: Workflow ECS_TASK_FAMILY variable.
     Value: !Sub "${ProjectName}-backend"
   ContainerName:
-    Description: Variable CONTAINER_NAME del workflow.
+    Description: Workflow CONTAINER_NAME variable.
     Value: !Ref ContainerName
   AlbDnsName:
-    Description: DNS del ALB (apunta aquí el registro del dominio).
+    Description: ALB DNS (point the domain record here).
     Value: !GetAtt LoadBalancer.DNSName
   LoadBalancerUrl:
     Value: !Sub "https://${DomainName}"
