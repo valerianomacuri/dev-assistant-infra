@@ -307,5 +307,5 @@ Outputs:
     Description: ALB DNS. Reach the API here over HTTP; point the domain record here later.
     Value: !GetAtt LoadBalancer.DNSName
   LoadBalancerUrl:
-    Description: Public URL of the API. Becomes https://${DomainName} once HTTPS is enabled (roadmap).
+    Description: Public URL of the API. Becomes https://api.leovaleriano.click once HTTPS is enabled (roadmap).
     Value: !Sub "http://${LoadBalancer.DNSName}"
