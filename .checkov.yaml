@@ -10,8 +10,8 @@ soft-fail: true
 compact: true
 quiet: true
 skip-check:
-  # ALB público por diseño: termina HTTPS de cara a Internet.
-  - CKV_AWS_260 # SG con ingress 0.0.0.0/0 al puerto 80 (redirige a 443)
+  # ALB público por diseño: hoy expone HTTP de cara a Internet (HTTPS en el roadmap).
+  - CKV_AWS_260 # SG con ingress 0.0.0.0/0 al puerto 80
   - CKV_AWS_24  # ingress 0.0.0.0/0 (ALB público)
   # Fargate en subred pública con IP pública para evitar el costo de NAT Gateway.
   - CKV_AWS_88  # recurso con IP pública asignada

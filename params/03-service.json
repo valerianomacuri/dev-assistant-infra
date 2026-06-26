@@ -1,11 +1,8 @@
 [
   { "ParameterKey": "ProjectName", "ParameterValue": "dev-assistant" },
-  { "ParameterKey": "ContainerName", "ParameterValue": "app" },
-  { "ParameterKey": "ContainerPort", "ParameterValue": "3000" },
-  { "ParameterKey": "TaskCpu", "ParameterValue": "512" },
-  { "ParameterKey": "TaskMemory", "ParameterValue": "1024" },
-  { "ParameterKey": "DesiredCount", "ParameterValue": "0" },
   { "ParameterKey": "CorsOrigins", "ParameterValue": "*" },
   { "ParameterKey": "AnthropicModel", "ParameterValue": "claude-haiku-4-5" },
-  { "ParameterKey": "OpenAiEmbeddingModel", "ParameterValue": "text-embedding-3-small" }
+  { "ParameterKey": "EcrRepositoryName", "ParameterValue": "dev-assistant-backend" },
+  { "ParameterKey": "ImageTag", "ParameterValue": "latest" },
+  { "ParameterKey": "DomainName", "ParameterValue": "api.leovaleriano.click" }
 ]

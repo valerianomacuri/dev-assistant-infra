@@ -11,11 +11,10 @@ Parameters:
     Type: String
     Default: dev-assistant
   GitHubOrg:
-    Type: AWS::SSM::Parameter::Value<String>
-    Default: /dev-assistant/cfn/GitHubOrg
+    Type: String
+    Default: valerianomacuri
     Description: >
-      GitHub organization or user that owns the repos. Resolved from SSM
-      Parameter Store; create /dev-assistant/cfn/GitHubOrg before deploying.
+      GitHub organization or user that owns the repos. 
   InfraGitHubRepo:
     Type: String
     Default: dev-assistant-infra

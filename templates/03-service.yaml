@@ -1,20 +1,21 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend - Service (layer 4/4). ACM certificate, ALB with HTTPS
-  (WebSockets for socket.io), ECS cluster, task definition and Fargate service.
-  The task runs in public subnets with a public IP (no NAT) and only receives
-  traffic from the ALB. Injects the 4 secrets from SSM Parameter Store.
+  dev-assistant-backend - Service (layer 4/4). ALB over HTTP (WebSockets for
+  socket.io), ECS cluster, task definition and Fargate service. The task runs in
+  public subnets with a public IP (no NAT) and only receives traffic from the ALB.
+  Injects the 4 secrets from SSM Parameter Store. HTTPS + custom domain (ACM +
+  HTTPS listener) are scaffolded as commented blocks for a future roadmap step.
 
 Parameters:
   ProjectName:
     Type: String
     Default: dev-assistant
   DomainName:
-    Type: AWS::SSM::Parameter::Value<String>
-    Default: /dev-assistant/cfn/DomainName
+    Type: String
+    Default: api.leovaleriano.click
     Description: >
-      Domain the API will serve (e.g. api.mydomain.com). Resolved from SSM
-      (/dev-assistant/cfn/DomainName).
+      Domain the API will serve once HTTPS + custom domain is enabled (roadmap).
+      Currently unused at runtime; the API is reached over HTTP via the ALB DNS.
   # CertificateArn:
   #   Type: String
   #   Default: ""
@@ -22,12 +23,12 @@ Parameters:
   #     ARN of an already-validated ACM certificate. Leave empty for the stack to
   #     create one (requires HostedZoneId for automatic DNS validation, or manual
   #     validation if your DNS is not in Route53).
-  ImageUri:
-    Type: AWS::SSM::Parameter::Value<String>
-    Default: /dev-assistant/cfn/ImageUri
-    Description: >
-      Full ECR image URI with tag (repo:tag). Resolved from SSM
-      (/dev-assistant/cfn/ImageUri).
+  EcrRepositoryName:
+    Type: String
+    Default: dev-assistant-backend
+  ImageTag:
+    Type: String
+    Default: latest
   ContainerName:
     Type: String
     Default: app
@@ -46,13 +47,16 @@ Parameters:
   DesiredCount:
     Type: Number
     Default: 0
+    Description: >
+      Starts at 0 on purpose: there is no image in ECR until the backend repo's
+      CI/CD pushes the first one. The backend CI/CD then activates the task(s).
   CorsOrigins:
     Type: String
     Default: "*"
     Description: Allowed CORS origins (the deployed frontend URL).
   AnthropicModel:
     Type: String
-    Default: claude-sonnet-4-6
+    Default: claude-haiku-4-5
   OpenAiEmbeddingModel:
     Type: String
     Default: text-embedding-3-small
@@ -99,6 +103,9 @@ Resources:
         - Key: stickiness.lb_cookie.duration_seconds
           Value: "86400"
 
+  # HTTP today: forwards directly to the app. ROADMAP (HTTPS + custom domain):
+  # swap the forward action for the commented redirect to 443, enable HttpsListener
+  # below, and create + validate an ACM certificate.
   HttpListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -108,14 +115,15 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
+      # ROADMAP: replace the forward above with a redirect to HTTPS.
       # DefaultActions:
       #   - Type: redirect
       #     RedirectConfig:
       #       Protocol: HTTPS
       #       Port: "443"
       #       StatusCode: HTTP_301
-            
 
+  # ROADMAP (HTTPS): enable once an ACM certificate exists for DomainName.
   # HttpsListener:
   #   Type: AWS::ElasticLoadBalancingV2::Listener
   #   Properties:
@@ -211,7 +219,7 @@ Resources:
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
         - Name: !Ref ContainerName
-          Image: !Ref ImageUri
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}:${ImageTag}"
           Essential: true
           PortMappings:
             - ContainerPort: !Ref ContainerPort
@@ -296,7 +304,8 @@ Outputs:
     Description: Workflow CONTAINER_NAME variable.
     Value: !Ref ContainerName
   AlbDnsName:
-    Description: ALB DNS (point the domain record here).
+    Description: ALB DNS. Reach the API here over HTTP; point the domain record here later.
     Value: !GetAtt LoadBalancer.DNSName
   LoadBalancerUrl:
-    Value: !Sub "https://${DomainName}"
+    Description: Public URL of the API. Becomes https://${DomainName} once HTTPS is enabled (roadmap).
+    Value: !Sub "http://${LoadBalancer.DNSName}"

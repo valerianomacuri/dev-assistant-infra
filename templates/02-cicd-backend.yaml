@@ -12,11 +12,10 @@ Parameters:
     Type: String
     Default: dev-assistant-backend
   GitHubOrg:
-    Type: AWS::SSM::Parameter::Value<String>
-    Default: /dev-assistant/cfn/GitHubOrg
+    Type: String
+    Default: valerianomacuri
     Description: >
-      GitHub organization or user that owns the backend repo. Resolved from SSM
-      Parameter Store (/dev-assistant/cfn/GitHubOrg).
+      GitHub organization or user that owns the repos
   GitHubRepo:
     Type: String
     Default: dev-assistant-backend
