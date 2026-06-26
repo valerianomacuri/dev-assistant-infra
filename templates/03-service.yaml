@@ -45,7 +45,7 @@ Parameters:
     Description: Memory in MB.
   DesiredCount:
     Type: Number
-    Default: 1
+    Default: 0
   CorsOrigins:
     Type: String
     Default: "*"

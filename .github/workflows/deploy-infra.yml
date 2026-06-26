@@ -32,7 +32,6 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - uses: actions/checkout@v4
 
@@ -60,9 +59,7 @@ jobs:
 
   plan:
     needs: validate
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - uses: actions/checkout@v4
 
@@ -90,8 +87,7 @@ jobs:
             --body-file plan.md --edit-last --create-if-none
 
   deploy:
-    needs: validate
-    if: github.event_name != 'pull_request'
+    needs: plan
     runs-on: ubuntu-latest
     environment: production # gate de aprobación manual
     steps:
