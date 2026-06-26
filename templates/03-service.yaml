@@ -15,19 +15,13 @@ Parameters:
     Description: >
       Domain the API will serve (e.g. api.mydomain.com). Resolved from SSM
       (/dev-assistant/cfn/DomainName).
-  CertificateArn:
-    Type: String
-    Default: ""
-    Description: >
-      ARN of an already-validated ACM certificate. Leave empty for the stack to
-      create one (requires HostedZoneId for automatic DNS validation, or manual
-      validation if your DNS is not in Route53).
-  HostedZoneId:
-    Type: String
-    Default: ""
-    Description: >
-      Route53 hosted zone of the domain (optional). If provided and the stack
-      creates the certificate, DNS validation is automatic.
+  # CertificateArn:
+  #   Type: String
+  #   Default: ""
+  #   Description: >
+  #     ARN of an already-validated ACM certificate. Leave empty for the stack to
+  #     create one (requires HostedZoneId for automatic DNS validation, or manual
+  #     validation if your DNS is not in Route53).
   ImageUri:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /dev-assistant/cfn/ImageUri
@@ -63,23 +57,7 @@ Parameters:
     Type: String
     Default: text-embedding-3-small
 
-Conditions:
-  CreateCertificate: !Equals [!Ref CertificateArn, ""]
-  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, ""]]
-
 Resources:
-  Certificate:
-    Type: AWS::CertificateManager::Certificate
-    Condition: CreateCertificate
-    Properties:
-      DomainName: !Ref DomainName
-      ValidationMethod: DNS
-      DomainValidationOptions: !If
-        - HasHostedZone
-        - - DomainName: !Ref DomainName
-            HostedZoneId: !Ref HostedZoneId
-        - !Ref AWS::NoValue
-
   # --- Application Load Balancer ---
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -134,18 +112,18 @@ Resources:
             Port: "443"
             StatusCode: HTTP_301
 
-  HttpsListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 443
-      Protocol: HTTPS
-      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
-      Certificates:
-        - CertificateArn: !If [CreateCertificate, !Ref Certificate, !Ref CertificateArn]
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
+  # HttpsListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Properties:
+  #     LoadBalancerArn: !Ref LoadBalancer
+  #     Port: 443
+  #     Protocol: HTTPS
+  #     SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+  #     Certificates:
+  #       - CertificateArn: !Ref CertificateArn
+  #     DefaultActions:
+  #       - Type: forward
+  #         TargetGroupArn: !Ref TargetGroup
 
   # --- ECS ---
   Cluster:
@@ -271,7 +249,7 @@ Resources:
   Service:
     Type: AWS::ECS::Service
     # The service cannot register in the TG until the listener exists.
-    DependsOn: HttpsListener
+    DependsOn: HttpListener
     Properties:
       ServiceName: !Sub "${ProjectName}-backend"
       Cluster: !Ref Cluster
