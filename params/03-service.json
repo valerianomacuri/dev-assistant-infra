@@ -4,7 +4,7 @@
   { "ParameterKey": "ContainerPort", "ParameterValue": "3000" },
   { "ParameterKey": "TaskCpu", "ParameterValue": "512" },
   { "ParameterKey": "TaskMemory", "ParameterValue": "1024" },
-  { "ParameterKey": "DesiredCount", "ParameterValue": "1" },
+  { "ParameterKey": "DesiredCount", "ParameterValue": "0" },
   { "ParameterKey": "CorsOrigins", "ParameterValue": "*" },
   { "ParameterKey": "AnthropicModel", "ParameterValue": "claude-haiku-4-5" },
   { "ParameterKey": "OpenAiEmbeddingModel", "ParameterValue": "text-embedding-3-small" }
