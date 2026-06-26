@@ -80,6 +80,7 @@ jobs:
           } | tee plan.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
