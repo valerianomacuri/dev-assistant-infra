@@ -82,6 +82,7 @@ Resources:
                   - ecr:UploadLayerPart
                   - ecr:CompleteLayerUpload
                   - ecr:PutImage
+                  - ecr:InitiateLayerUpload
                 Resource: !GetAtt EcrRepository.Arn
         - PolicyName: ecs-deploy
           PolicyDocument:
