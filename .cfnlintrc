@@ -1,0 +1,3 @@
+# Config de cfn-lint. Lintea los 3 templates del proyecto.
+templates:
+  - templates/*.yaml

@@ -10,8 +10,11 @@ Parameters:
     Type: String
     Default: dev-assistant
   DomainName:
-    Type: String
-    Description: Dominio que servirá la API (p.ej. api.midominio.com).
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /dev-assistant/cfn/DomainName
+    Description: >
+      Dominio que servirá la API (p.ej. api.midominio.com). Se resuelve desde SSM
+      (/dev-assistant/cfn/DomainName).
   CertificateArn:
     Type: String
     Default: ""
@@ -26,8 +29,11 @@ Parameters:
       Zona alojada de Route53 del dominio (opcional). Si se indica y el stack
       crea el certificado, la validación DNS es automática.
   ImageUri:
-    Type: String
-    Description: URI completa de la imagen en ECR con tag (repo:tag).
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /dev-assistant/cfn/ImageUri
+    Description: >
+      URI completa de la imagen en ECR con tag (repo:tag). Se resuelve desde SSM
+      (/dev-assistant/cfn/ImageUri).
   ContainerName:
     Type: String
     Default: app
@@ -244,8 +250,9 @@ Resources:
             - Name: OPENAI_EMBEDDING_MODEL
               Value: !Ref OpenAiEmbeddingModel
           Secrets:
-            # DATABASE_URL es un SecureString de SSM (la DB se crea a mano por
-            # consola; el endpoint/contraseña se ponen en este parámetro).
+            # DATABASE_URL es un SecureString de SSM. El RDS se crea por consola
+            # con su propia red (subnet group + SG manuales), fuera de los stacks;
+            # el endpoint/contraseña se ponen en este parámetro.
             - Name: DATABASE_URL
               ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
             - Name: ANTHROPIC_API_KEY

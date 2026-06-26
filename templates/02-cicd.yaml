@@ -13,12 +13,21 @@ Parameters:
     Type: String
     Default: dev-assistant-backend
   GitHubOrg:
-    Type: String
-    Description: Organización o usuario de GitHub dueño del repo del backend.
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /dev-assistant/cfn/GitHubOrg
+    Description: >
+      Organización o usuario de GitHub dueño de los repos. Se resuelve desde SSM
+      Parameter Store; crea /dev-assistant/cfn/GitHubOrg antes de desplegar.
   GitHubRepo:
     Type: String
     Default: dev-assistant-backend
     Description: Nombre del repositorio del backend en GitHub.
+  InfraGitHubRepo:
+    Type: String
+    Default: dev-assistant-infra
+    Description: >
+      Repositorio de infraestructura (CloudFormation) en GitHub. Su GitHub
+      Actions asume InfraDeployRole para validar y desplegar los stacks.
   CreateOIDCProvider:
     Type: String
     Default: "true"
@@ -67,9 +76,6 @@ Resources:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
         - sts.amazonaws.com
-      ThumbprintList:
-        - 6938fd4d98bab03faadb97b34396831e3780aea1
-        - 1c58a3a8518e8759bf075b76b750d4f2df264fcb
 
   DeployRole:
     Type: AWS::IAM::Role
@@ -128,10 +134,127 @@ Resources:
                   StringEquals:
                     iam:PassedToService: ecs-tasks.amazonaws.com
 
+  # Rol que asume GitHub Actions del repo de INFRA para desplegar los stacks de
+  # CloudFormation (network/cicd/service). Es necesariamente potente: gestiona
+  # red, ALB, ECS, ACM, logs y roles IAM nombrados. Se acota por Resource al
+  # prefijo del proyecto donde el servicio lo permite; servicios cuyo ARN no
+  # admite un patrón útil (ec2, elb, acm) quedan en "*".
+  InfraDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-infra-deploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOIDC
+                - !Ref GitHubOIDCProvider
+                - !Ref ExistingOIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${InfraGitHubRepo}:*"
+      Policies:
+        - PolicyName: cloudformation-stacks
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Gestión de los stacks del proyecto + change sets (preview en PR).
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStacks
+                  - cloudformation:ListStackResources
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+        - PolicyName: infra-resources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Recursos de los 3 stacks. ec2/elb/acm no admiten un patrón de ARN
+              # útil para estas acciones de create/describe, por eso van en "*".
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - ecs:*
+                  - acm:*
+                  - route53:GetHostedZone
+                  - route53:ListHostedZones
+                  - route53:ChangeResourceRecordSets
+                  - route53:GetChange
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:TagResource
+                  - logs:ListTagsForResource
+                  - ecr:CreateRepository
+                  - ecr:DeleteRepository
+                  - ecr:DescribeRepositories
+                  - ecr:PutLifecyclePolicy
+                  - ecr:GetLifecyclePolicy
+                  - ecr:SetRepositoryPolicy
+                  - ecr:TagResource
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                Resource: "*"
+        - PolicyName: iam-named-roles
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Los stacks crean roles/OIDC nombrados (CAPABILITY_NAMED_IAM).
+              # Acotado al prefijo del proyecto.
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-*"
+              # OIDC provider: recurso único de cuenta, no admite prefijo.
+              - Effect: Allow
+                Action:
+                  - iam:CreateOpenIDConnectProvider
+                  - iam:DeleteOpenIDConnectProvider
+                  - iam:GetOpenIDConnectProvider
+                  - iam:TagOpenIDConnectProvider
+                Resource: "*"
+
 Outputs:
   DeployRoleArn:
     Description: ARN del rol para el secreto AWS_ROLE_ARN de GitHub.
     Value: !GetAtt DeployRole.Arn
+  InfraDeployRoleArn:
+    Description: ARN del rol para el secreto AWS_DEPLOY_ROLE_ARN del repo de infra.
+    Value: !GetAtt InfraDeployRole.Arn
   EcrRepositoryName:
     Value: !Ref EcrRepository
   EcrRepositoryUri:

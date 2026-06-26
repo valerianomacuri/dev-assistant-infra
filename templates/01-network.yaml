@@ -1,10 +1,11 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend — Red (capa 1/4). VPC con 2 subredes públicas y 2
-  privadas en 2 AZ, Internet Gateway y Security Groups. Optimizado para MVP:
+  dev-assistant-backend — Red (capa 1/4). VPC con 2 subredes públicas en 2 AZ,
+  Internet Gateway y 2 Security Groups (alb-sg, app-sg). Optimizado para MVP:
   las tareas Fargate van en subredes públicas con IP pública para tener salida
-  a Internet por el IGW y así evitar el costo de un NAT Gateway. RDS queda en
-  subredes privadas, solo accesible desde el SG de la app.
+  a Internet por el IGW y así evitar el costo de un NAT Gateway. El RDS no forma
+  parte de este stack: se crea por consola con su propia red (subnet group y
+  security group manuales).
 
 Parameters:
   ProjectName:
@@ -63,29 +64,6 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-public-2"
 
-  # --- Subredes privadas (solo RDS) ---
-  PrivateSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      AvailabilityZone: !Select [0, !GetAZs ""]
-      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 4, 8]]
-      MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-private-1"
-
-  PrivateSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      AvailabilityZone: !Select [1, !GetAZs ""]
-      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 4, 8]]
-      MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-private-2"
-
   # --- Routing público (0.0.0.0/0 -> IGW) ---
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -114,27 +92,6 @@ Resources:
     Properties:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet2
-
-  # --- Routing privado (sin salida a Internet; RDS no la necesita) ---
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-private-rt"
-
-  PrivateSubnet1RouteAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable
-      SubnetId: !Ref PrivateSubnet1
-
-  PrivateSubnet2RouteAssoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable
-      SubnetId: !Ref PrivateSubnet2
 
   # --- Security Groups ---
   AlbSecurityGroup:
@@ -172,21 +129,6 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-app-sg"
 
-  RdsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: RDS PostgreSQL. Solo accesible desde el SG de la app.
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          SourceSecurityGroupId: !Ref AppSecurityGroup
-          Description: Postgres desde las tareas Fargate
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-rds-sg"
-
 Outputs:
   VpcId:
     Value: !Ref Vpc
@@ -200,14 +142,6 @@ Outputs:
     Value: !Ref PublicSubnet2
     Export:
       Name: !Sub "${ProjectName}-PublicSubnet2"
-  PrivateSubnet1:
-    Value: !Ref PrivateSubnet1
-    Export:
-      Name: !Sub "${ProjectName}-PrivateSubnet1"
-  PrivateSubnet2:
-    Value: !Ref PrivateSubnet2
-    Export:
-      Name: !Sub "${ProjectName}-PrivateSubnet2"
   AlbSecurityGroupId:
     Value: !Ref AlbSecurityGroup
     Export:
@@ -216,7 +150,3 @@ Outputs:
     Value: !Ref AppSecurityGroup
     Export:
       Name: !Sub "${ProjectName}-AppSecurityGroupId"
-  RdsSecurityGroupId:
-    Value: !Ref RdsSecurityGroup
-    Export:
-      Name: !Sub "${ProjectName}-RdsSecurityGroupId"

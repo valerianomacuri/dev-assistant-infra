@@ -1,0 +1,108 @@
+name: Deploy infra
+
+# CI/CD de la infraestructura (CloudFormation).
+#   - En cada PR: lint (cfn-lint) + seguridad (checkov) + validate-template, y un
+#     "plan" que crea change sets para previsualizar el diff (sin cambiar nada).
+#   - En push a main: despliega los 3 stacks en orden, tras la aprobación manual
+#     del Environment `production`.
+# Autenticación con AWS vía GitHub OIDC (sin llaves estáticas): el rol a asumir
+# (InfraDeployRole) lo crea el stack `02-cicd.yaml`.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC
+  contents: read
+  pull-requests: write # comentar el plan en el PR
+
+concurrency:
+  group: deploy-infra
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT_NAME: dev-assistant
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install linters
+        run: pip install --quiet cfn-lint checkov
+
+      - name: cfn-lint
+        run: cfn-lint
+
+      - name: checkov (seguridad)
+        run: checkov --config-file .checkov.yaml
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: validate-template
+        run: bash scripts/cfn.sh validate
+
+  plan:
+    needs: validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Change set preview
+        run: |
+          {
+            echo "## Plan de infraestructura (change sets)"
+            echo ""
+            for slug in 01-network 02-cicd 03-service; do
+              bash scripts/cfn.sh changeset "$slug"
+            done
+          } | tee plan.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment plan on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body-file plan.md --edit-last --create-if-none
+
+  deploy:
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production # gate de aprobación manual
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Orden obligatorio: los stacks se enlazan con Export/ImportValue.
+      - name: Deploy network
+        run: bash scripts/cfn.sh deploy 01-network
+      - name: Deploy cicd
+        run: bash scripts/cfn.sh deploy 02-cicd
+      - name: Deploy service
+        run: bash scripts/cfn.sh deploy 03-service

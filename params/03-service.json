@@ -1,9 +1,5 @@
 [
   { "ParameterKey": "ProjectName", "ParameterValue": "dev-assistant" },
-  { "ParameterKey": "DomainName", "ParameterValue": "api.tudominio.com" },
-  { "ParameterKey": "CertificateArn", "ParameterValue": "" },
-  { "ParameterKey": "HostedZoneId", "ParameterValue": "" },
-  { "ParameterKey": "ImageUri", "ParameterValue": "ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/dev-assistant-backend:latest" },
   { "ParameterKey": "ContainerName", "ParameterValue": "app" },
   { "ParameterKey": "ContainerPort", "ParameterValue": "3000" },
   { "ParameterKey": "TaskCpu", "ParameterValue": "512" },

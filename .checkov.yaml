@@ -1,0 +1,19 @@
+# Config de Checkov (escaneo de seguridad de la infra).
+# soft-fail: reporta hallazgos pero NO bloquea el merge — las decisiones de costo
+# del MVP (subredes públicas, ALB abierto a Internet) son intencionales. Revisa
+# el reporte en el job summary y quita skips/soft-fail a medida que endurezcas.
+directory:
+  - templates
+framework:
+  - cloudformation
+soft-fail: true
+compact: true
+quiet: true
+skip-check:
+  # ALB público por diseño: termina HTTPS de cara a Internet.
+  - CKV_AWS_260 # SG con ingress 0.0.0.0/0 al puerto 80 (redirige a 443)
+  - CKV_AWS_24  # ingress 0.0.0.0/0 (ALB público)
+  # Fargate en subred pública con IP pública para evitar el costo de NAT Gateway.
+  - CKV_AWS_88  # recurso con IP pública asignada
+  # ECR con tags mutables (se reusa :latest a propósito en este MVP).
+  - CKV_AWS_51  # ECR image tag immutability

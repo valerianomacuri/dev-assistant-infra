@@ -7,6 +7,10 @@
 *.out
 packaged-*.yaml
 
+# Artefactos del CI/CD (plan y errores de change set).
+plan.md
+cs.err
+
 # Editores / SO.
 .vscode/
 .idea/
