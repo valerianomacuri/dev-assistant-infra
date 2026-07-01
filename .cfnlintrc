@@ -3,3 +3,10 @@
 templates:
   - templates/**/*.yaml
   - templates/**/*.yml
+
+# Ignora warnings conocidos aceptados para el MVP.
+# W1011 recomienda usar dynamic references (SSM SecureString / Secrets Manager)
+# en lugar de pasar secretos como parámetros de CloudFormation.
+# Se mantiene temporalmente porque los secretos son gestionados externamente.
+ignore_checks:
+  - W1011
