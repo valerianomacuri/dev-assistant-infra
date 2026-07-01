@@ -58,7 +58,6 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "${ProjectName}-alarms"
-      KmsMasterKeyId: alias/aws/sns
 
   AlarmEmailSubscription:
     Type: AWS::SNS::Subscription
