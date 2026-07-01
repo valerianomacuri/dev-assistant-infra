@@ -132,7 +132,9 @@ Resources:
                   - rds:ModifyDBInstance
                   - rds:AddTagsToResource
                   - rds:RemoveTagsFromResource
-                Resource: !Sub "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:db:${ProjectName}-*"
+                Resource: 
+                  - !Sub "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:db:${ProjectName}-*"
+                  - !Sub "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:subgrp:${ProjectName}-*"
               - Effect: Allow
                 Action:
                   - rds:CreateDBSubnetGroup
