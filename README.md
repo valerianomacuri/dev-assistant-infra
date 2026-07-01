@@ -45,7 +45,7 @@ backend-service`.
 
 | Plantilla | Stack | Despliega | Qué crea |
 |-----------|-------|-----------|----------|
-| `templates/bootstrap/github-oidc.yml` | `dev-assistant-cicd-infra` | **Manual (consola)** | Proveedor **OIDC** de GitHub (único por cuenta), el **`InfraDeployRole`** que asume el CI de infra y el **`DeployRole`** que asume el CI del backend. |
+| `templates/bootstrap/github-oidc.yml` | `dev-assistant-github-oidc` | **Manual (consola)** | Proveedor **OIDC** de GitHub (único por cuenta), el **`InfraDeployRole`** que asume el CI de infra y el **`DeployRole`** que asume el CI del backend. |
 | `templates/bootstrap/ecr.yml` | `dev-assistant-ecr` | **Manual (consola/CLI)** | Repositorio **ECR** de la imagen del backend, con la imagen **placeholder** subida a mano (`scripts/push-placeholder.sh`) antes del primer deploy de `backend-service`. |
 | `templates/infra/network.yaml` | `dev-assistant-network` | CI | VPC `10.20.0.0/16`, 2 subredes públicas (ALB/Fargate, 2 AZ) + 2 subredes privadas (RDS, sin ruta a Internet), Internet Gateway y rutas. Exporta `VpcId`, `PublicSubnet1/2`, `PrivateSubnet1/2`. |
 | `templates/infra/security.yml` | `dev-assistant-security` | CI | Security Groups `alb-sg`, `app-sg` y `rds-sg`. Importa `VpcId`. Exporta `AlbSecurityGroupId`, `AppSecurityGroupId`, `RdsSecurityGroupId`. |
@@ -130,7 +130,7 @@ cuenta/entorno viven en `params/*.json`.
 
 1. **Bootstrap del CI de infra y del backend (consola).** En la consola de AWS →
    **CloudFormation → Create stack → With new resources** → **Upload a template file** →
-   sube `templates/bootstrap/github-oidc.yml`. Nombre de stack `dev-assistant-cicd-infra`,
+   sube `templates/bootstrap/github-oidc.yml`. Nombre de stack `dev-assistant-github-oidc`,
    reconoce la capacidad **IAM con nombres personalizados** (NAMED_IAM) y crea el stack.
    En la pestaña **Outputs** copia `InfraDeployRoleArn` y `DeployRoleArn`.
    > Si este stack **ya existía** de antes (sin el stack `rds`), hay que **actualizarlo**
@@ -238,7 +238,7 @@ normal es por **Pull Request**.
   tras la **aprobación manual** del Environment `production`. Idempotente
   (`--no-fail-on-empty-changeset`).
 
-> Los stacks `bootstrap` (`dev-assistant-cicd-infra`) y `ecr` (`dev-assistant-ecr`) **no
+> Los stacks `bootstrap` (`dev-assistant-github-oidc`) y `ecr` (`dev-assistant-ecr`) **no
 > los gestiona el CI**: `bootstrap` define los propios roles `InfraDeployRole`/`DeployRole`
 > que el CI asume, y `ecr` necesita existir con la imagen placeholder antes de que corra
 > cualquier CI (ver [Puesta en marcha](#puesta-en-marcha-una-sola-vez)). Ambos se validan
@@ -338,7 +338,7 @@ tarea pública directa (se pierde el WS gestionado).
   primero para no invalidar el rol OIDC mientras el CI todavía lo necesita, y el segundo
   porque es manual (`bash scripts/cfn.sh destroy ecr` vacía el repo primero — si no,
   `delete-stack` falla con "repository not empty"). El stack `bootstrap` se borra aparte, a
-  mano (`aws cloudformation delete-stack --stack-name dev-assistant-cicd-infra`), y podés
+  mano (`aws cloudformation delete-stack --stack-name dev-assistant-github-oidc`), y podés
   hacerlo en cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo
   template ya no queda ningún `Fn::ImportValue` de otro stack hacia su export
   `OidcProviderArn`.
