@@ -8,6 +8,9 @@ NestJS con PostgreSQL + pgvector y WebSockets. Optimizada como **MVP** y despleg
 > código de la aplicación, su `Dockerfile` y el workflow que la construye y publica la
 > imagen viven en el repositorio `dev-assistant-backend`.
 
+> Para desplegar de cero, seguí la guía paso a paso: **[DEPLOY.md](DEPLOY.md)**. Este
+> README se enfoca en la arquitectura y el porqué de cada decisión de diseño.
+
 ## Arquitectura
 
 ```
@@ -119,110 +122,17 @@ cuenta/entorno viven en `params/*.json`.
 
 ## Requisitos previos
 
-- Una **cuenta de AWS** con acceso a la consola web en **us-east-1** (perfil admin para el
-  bootstrap manual). No necesitas AWS CLI: las operaciones manuales son por consola y el
-  CI ejecuta `scripts/cfn.sh` por su cuenta.
-- El repositorio **`dev-assistant-backend`** en GitHub (para el OIDC y su CI/CD).
-- **Este repositorio (`dev-assistant-infra`)** en GitHub: su CI/CD asume el
-  `InfraDeployRole`, cuya confianza OIDC está ligada a `repo:<org>/dev-assistant-infra:*`.
+Cuenta de AWS con consola en **us-east-1** (perfil admin para el bootstrap manual, no
+hace falta AWS CLI) y los repos de GitHub `dev-assistant-infra` (este) y
+`dev-assistant-backend`. Detalle completo en [DEPLOY.md § 1](DEPLOY.md#1-antes-de-empezar).
 
 ## Puesta en marcha (una sola vez)
 
-1. **Bootstrap del CI de infra y del backend (consola).** En la consola de AWS →
-   **CloudFormation → Create stack → With new resources** → **Upload a template file** →
-   sube `templates/bootstrap/github-oidc.yml`. Nombre de stack `dev-assistant-github-oidc`,
-   reconoce la capacidad **IAM con nombres personalizados** (NAMED_IAM) y crea el stack.
-   En la pestaña **Outputs** copia `InfraDeployRoleArn` y `DeployRoleArn`.
-   > Si este stack **ya existía** de antes (sin el stack `rds`), hay que **actualizarlo**
-   > a mano con la versión actual de `github-oidc.yml` (Update stack → Replace current
-   > template) antes del paso 3: `InfraDeployRole` ahora también necesita los permisos
-   > `rds:*` y `ssm:PutParameter` que usan el stack `rds` y `set-database-url`.
-
-2. **Bootstrap del repositorio ECR y su placeholder (consola/CLI).** Con las mismas
-   credenciales admin: despliega `templates/bootstrap/ecr.yml` (stack
-   `dev-assistant-ecr`, sin capacidades especiales) — por consola igual que el paso 1, o
-   con `bash scripts/cfn.sh deploy ecr` si ya tenés AWS CLI configurado. Después corré
-   `bash scripts/push-placeholder.sh`: construye y sube a ese repo, como tag `:latest`,
-   una imagen mínima (`placeholder/`) que responde `200 {"status":"ok"}` en `GET /health`.
-   Esto deja `backend-service` listo para arrancar con `DesiredCount: 1` desde su primer
-   deploy (paso 4), sin depender de que el CI del backend haya corrido antes. El primer
-   push real de ese CI sobreescribe el mismo tag `:latest`.
-
-3. **Configura este repositorio en GitHub** (Settings → Secrets and variables → Actions):
-   - **Secret** `AWS_DEPLOY_ROLE_ARN` = `InfraDeployRoleArn` del paso 1.
-   - **Secret** `RDS_MASTER_PASSWORD` = una contraseña fuerte que elijas vos (nunca va en
-     `params/*.json` ni en git). El stack `rds` la usa como password maestra self-managed
-     de la instancia, y el CI la reusa para componer `DATABASE_URL` automáticamente
-     (ver paso 4).
-   - **Variables**: `AWS_REGION` = `us-east-1`, `PROJECT_NAME` = `dev-assistant`.
-   - En **Settings → Environments** crea `production` y añade _Required reviewers_ (gate de
-     aprobación antes de cada deploy).
-
-4. **Sube el repo y deja que el CI despliegue.** Con la rama `main` en GitHub, el push
-   dispara el workflow: tras la aprobación del Environment `production`, despliega
-   `network → security → rds → ecs-cluster → alb → observability → backend-service`.
-   Justo después de `rds`, el paso **"Set DATABASE_URL in SSM"** arma la connection string
-   con el output `RdsEndpointAddress` + `RDS_MASTER_PASSWORD` y la publica en
-   `/dev-assistant/DATABASE_URL` — sin pasos manuales. El servicio ECS queda con **1 tarea
-   corriendo la imagen placeholder** del paso 2 (`DesiredCount: 1`), sana detrás del ALB. Si
-   querés recibir alarmas por email, completá `AlarmEmail` en `params/observability.json`
-   antes de este paso (o después, con un redeploy del stack `observability`) y confirmá el
-   mail que manda SNS.
-
-5. **Crea los 3 secretos restantes en SSM por consola** (ver
-   [Secretos en SSM](#paso-por-consola--secretos-en-ssm-parameter-store)): `DATABASE_URL`
-   ya lo dejó el CI en el paso 4.
-
-6. **Configura el repositorio del backend en GitHub** (ver
-   [Variables y secretos del backend](#variables-y-secretos-de-github-backend)) con el
-   output `DeployRoleArn` del paso 1 y los outputs de los stacks `ecs-cluster` y
-   `backend-service`.
-
-7. **Primer despliegue del backend.** El CI/CD del backend construye la imagen real, la
-   publica en ECR (reemplazando el placeholder en el mismo tag `:latest`) y actualiza la
-   tarea del servicio. A partir de aquí la API responde por `http://<AlbDnsName>` (output
-   del stack `service`).
-
-## Paso por consola — Secretos en SSM Parameter Store
-
-La app necesita 3 secretos más que **no** van en CloudFormation (`DATABASE_URL` ya lo
-escribe el CI automáticamente tras desplegar `rds`, ver [Puesta en marcha](#puesta-en-marcha-una-sola-vez)).
-Créalos en la consola web, una sola vez:
-
-1. Consola AWS → **Systems Manager → Parameter Store → Create parameter**.
-2. Crea uno por cada **Name**:
-   - `/dev-assistant/ANTHROPIC_API_KEY`
-   - `/dev-assistant/OPENAI_API_KEY`
-   - `/dev-assistant/JWT_SECRET` (valor largo y aleatorio)
-3. En cada uno: **Tier** = Standard · **Type** = **SecureString** · **KMS key source** =
-   _My current account_ con `alias/aws/ssm` (default) · pega el valor en **Value** →
-   **Create parameter**.
-
-> El rol de ejecución de ECS ya tiene permiso de lectura sobre `/dev-assistant/*`, que
-> cubre los 4 secretos (los 3 de acá más `DATABASE_URL`).
-
-> La app conecta con el **usuario master** a propósito: LangChain necesita ese privilegio
-> para crear la extensión `vector` (pgvector) en el primer uso del RAG.
-
-## Variables y secretos de GitHub (backend)
-
-En **Settings → Secrets and variables → Actions** del repo `dev-assistant-backend`:
-
-- **Secret** `AWS_ROLE_ARN` = output `DeployRoleArn` del stack `cicd-infra` (bootstrap).
-- **Variables** (Repository variables):
-
-  | Variable | Valor |
-  |---|---|
-  | `AWS_REGION` | `us-east-1` |
-  | `ECR_REPOSITORY` | `dev-assistant-backend` |
-  | `ECS_CLUSTER` | `dev-assistant` |
-  | `ECS_SERVICE` | `dev-assistant-backend` |
-  | `ECS_TASK_FAMILY` | `dev-assistant-backend` |
-  | `CONTAINER_NAME` | `app` |
-
-  (`ECS_CLUSTER` coincide con el output `ClusterName` del stack `ecs-cluster`;
-  `ECS_SERVICE`, `ECS_TASK_FAMILY` y `CONTAINER_NAME` con los outputs del stack
-  `backend-service`.)
+Tres fases: **bootstrap manual** (OIDC + roles, ECR + imagen placeholder) → **CI de
+este repo** despliega `network → security → rds → ecs-cluster → alb → observability →
+backend-service` tras push a `main` → **CI del backend** publica la imagen real y hace
+el rollout. Pasos exactos, comandos y valores de cada secret/variable en
+**[DEPLOY.md](DEPLOY.md)**.
 
 ## CI/CD de la infraestructura
 
@@ -249,16 +159,12 @@ normal es por **Pull Request**.
 > de infra crea el RDS (stack `rds`) y también escribe `DATABASE_URL` en SSM
 > automáticamente; los otros 3 secretos (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 > `JWT_SECRET`) siguen siendo manuales por diseño (ver
-> [Secretos en SSM](#paso-por-consola--secretos-en-ssm-parameter-store)).
+> [DEPLOY.md, Paso 5](DEPLOY.md#paso-5--secretos-manuales-en-ssm-parameter-store)).
 
-La lógica de despliegue vive en [`scripts/cfn.sh`](scripts/cfn.sh)
-(`validate` | `changeset <slug>` | `deploy <slug>`), que el workflow ejecuta
-internamente; pasa los params de `params/*.json`.
-
-`scripts/cfn.sh` también tiene `destroy <slug>` y `destroy-all` para borrar stacks. Son
-solo para uso manual desde la terminal (con las credenciales AWS que ya tengas
-configuradas) — el workflow **no** los ejecuta. Ver [Notas](#notas) para el borrado
-completo del entorno.
+La lógica de despliegue vive en [`scripts/cfn.sh`](scripts/cfn.sh); el workflow la
+ejecuta internamente y pasa los params de `params/*.json`. Referencia de comandos
+(`validate`/`changeset`/`deploy`/`destroy`/`destroy-all`) en
+[DEPLOY.md § 4](DEPLOY.md#4-referencia-rápida--scriptscfnsh).
 
 ## Roadmap: HTTPS + dominio personalizado
 
@@ -291,8 +197,8 @@ Hoy el ALB expone **HTTP:80**. Para servir la API por **HTTPS** en un dominio pr
 | **Total** | **~US$51–56** |
 
 > Con `DesiredCount: 1` la tarea de Fargate corre desde el primer deploy (imagen
-> placeholder o real), así que ese costo aplica desde el paso 4 de
-> [Puesta en marcha](#puesta-en-marcha-una-sola-vez), no desde el primer push del backend.
+> placeholder o real), así que ese costo aplica desde el deploy de `backend-service`
+> (ver [Puesta en marcha](#puesta-en-marcha-una-sola-vez)), no desde el primer push del backend.
 
 > Al borrar o reemplazar el `DBInstance` (stack `rds`), `DeletionPolicy`/
 > `UpdateReplacePolicy: Snapshot` deja un **snapshot final** en AWS (~US$0.095/GB-mes, unos
@@ -305,19 +211,8 @@ tarea pública directa (se pierde el WS gestionado).
 
 ## Verificación end-to-end
 
-1. **Stacks OK**: en la consola de **CloudFormation**, los stacks `bootstrap`, `ecr`,
-   `network`, `security`, `rds`, `ecs-cluster`, `alb`, `observability` y `backend-service`
-   en `CREATE_COMPLETE` / `UPDATE_COMPLETE`.
-2. **Salud**: `curl http://<AlbDnsName>/health` → `{"status":"ok"}` (valida ALB + tarea
-   sana). Usa el output `AlbDnsName` del stack `alb`.
-3. **Logs**: CloudWatch → `/ecs/dev-assistant-backend`. Debe verse que las **migraciones
-   se aplicaron** y luego `DevAssistant API escuchando...` sin errores de TypeORM.
-4. **App**: probar registro/login (JWT) y el chat (incluida la conexión WebSocket).
-5. **CI/CD**: un push a `main` del repo backend debe construir, publicar en ECR y dejar el
-   servicio `stable` con la nueva imagen.
-6. **Observability**: abrí el output `DashboardUrl` del stack `observability` y confirmá
-   que los widgets de ALB (requests, hosts saludables) muestran datos. Las alarmas deberían
-   estar en `OK`, visibles en CloudWatch → Alarms con el prefijo `dev-assistant-`.
+Checklist completo (stacks, `/health`, logs, app, CI/CD, dashboard) en
+[DEPLOY.md § 5](DEPLOY.md#5-verificación-end-to-end).
 
 > La subida de documentos (S3), la ingesta asíncrona (SQS) y el PDF de stats (Lambda) están
 > **fuera de esta fase**: el Task Role aún no tiene esos permisos.
@@ -326,19 +221,7 @@ tarea pública directa (se pierde el WS gestionado).
 
 - **pgvector** no requiere pasos manuales: la extensión `vector` y la tabla `chunks` las
   crea LangChain (`PGVectorStore`) en el primer uso del RAG, con las credenciales master de
-  RDS.
-- **Para borrar todo**: corré `bash scripts/cfn.sh destroy-all` (`destroy` usa
-  `delete-stack`, que no necesita parámetros, así que no hace falta `RDS_MASTER_PASSWORD`
-  para borrar). Borra los 7 stacks CI-managed en orden inverso al de despliegue
-  (`backend-service → observability → alb → ecs-cluster → rds → security → network`),
-  esperando a que cada borrado termine antes de seguir con el siguiente. Al borrar el stack
-  `rds`, `DeletionPolicy: Snapshot` deja un **snapshot final** de la instancia — si no
-  querés seguir pagando su almacenamiento, borralo a mano después desde
-  **RDS → Snapshots**. No toca `cicd-infra` (bootstrap) **ni** `ecr` a propósito: el
-  primero para no invalidar el rol OIDC mientras el CI todavía lo necesita, y el segundo
-  porque es manual (`bash scripts/cfn.sh destroy ecr` vacía el repo primero — si no,
-  `delete-stack` falla con "repository not empty"). El stack `bootstrap` se borra aparte, a
-  mano (`aws cloudformation delete-stack --stack-name dev-assistant-github-oidc`), y podés
-  hacerlo en cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo
-  template ya no queda ningún `Fn::ImportValue` de otro stack hacia su export
-  `OidcProviderArn`.
+  RDS. La app conecta con ese **usuario master** a propósito: LangChain necesita ese
+  privilegio para crear la extensión.
+- **Para borrar todo el entorno** (comandos y orden exacto): ver
+  [DEPLOY.md § 6](DEPLOY.md#6-borrar-todo-teardown).
