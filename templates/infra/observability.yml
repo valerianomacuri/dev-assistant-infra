@@ -2,11 +2,12 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   dev-assistant-backend - CloudWatch observability: SNS topic for alerts (with
   an optional email subscription), alarms on the ECS service (CPU/memory), the
-  ALB (unhealthy hosts, 5XX, latency) and a log-based error count on the
-  backend's log group, plus a single dashboard aggregating all of it. RDS is
-  out of scope (it's created by hand outside CloudFormation). Imports
-  ClusterName and BackendLogGroupName from ecs-cluster, and
-  LoadBalancerFullName / TargetGroupFullName from alb.
+  ALB (unhealthy hosts, 5XX, latency), the RDS instance (CPU, storage, memory,
+  connections, latency, IOPS, network throughput) and a log-based error count
+  on the backend's log group, plus a single dashboard aggregating all of it.
+  Imports ClusterName and BackendLogGroupName from ecs-cluster,
+  LoadBalancerFullName / TargetGroupFullName from alb, and reproduces the RDS
+  DBInstanceIdentifier fixed by rds.yml (not exported there).
 
 Parameters:
   ProjectName:
@@ -48,6 +49,68 @@ Parameters:
     Type: Number
     Default: 5
     Description: Backend log lines matching { $.level = "error" } (sum) in 5min.
+  DbInstanceIdentifier:
+    Type: String
+    Default: dev-assistant-postgres
+    Description: >
+      RDS DBInstanceIdentifier (fixed by rds.yml as "<ProjectName>-postgres",
+      not exported there). Only override if that naming changes.
+  RdsCpuAlarmThreshold:
+    Type: Number
+    Default: 80
+    Description: RDS CPUUtilization (%) sustained for 3x5min periods.
+  RdsFreeStorageSpaceAlarmThresholdBytes:
+    Type: Number
+    Default: 2147483648
+    Description: >
+      RDS FreeStorageSpace (bytes) minimum before alarm. Default 2 GiB, 10% of
+      the 20 GB allocated in rds.yml.
+  RdsFreeableMemoryAlarmThresholdBytes:
+    Type: Number
+    Default: 104857600
+    Description: >
+      RDS FreeableMemory (bytes) minimum before alarm. Default 100 MiB, low
+      headroom on a db.t4g.micro (1 GB RAM).
+  RdsDatabaseConnectionsAlarmThreshold:
+    Type: Number
+    Default: 80
+    Description: >
+      RDS DatabaseConnections sustained for 3x5min periods. A db.t4g.micro's
+      default max_connections is ~112; 80 leaves headroom before exhaustion.
+  RdsReadLatencyAlarmThresholdSeconds:
+    Type: Number
+    Default: 0.02
+    Description: RDS ReadLatency (seconds) sustained for 3x5min periods.
+  RdsWriteLatencyAlarmThresholdSeconds:
+    Type: Number
+    Default: 0.02
+    Description: RDS WriteLatency (seconds) sustained for 3x5min periods.
+  RdsReadIopsAlarmThreshold:
+    Type: Number
+    Default: 1500
+    Description: >
+      RDS ReadIOPS sustained for 3x5min periods. ~50% of the gp3 baseline
+      (3000 IOPS, shared between read and write) for the 20 GB volume.
+  RdsWriteIopsAlarmThreshold:
+    Type: Number
+    Default: 1500
+    Description: >
+      RDS WriteIOPS sustained for 3x5min periods. ~50% of the gp3 baseline
+      (3000 IOPS, shared between read and write) for the 20 GB volume.
+  RdsNetworkReceiveThroughputAlarmThresholdBytes:
+    Type: Number
+    Default: 65536000
+    Description: >
+      RDS NetworkReceiveThroughput (bytes/sec) sustained for 3x5min periods.
+      ~50% of the gp3 baseline throughput (125 MiB/s, shared between receive
+      and transmit).
+  RdsNetworkTransmitThroughputAlarmThresholdBytes:
+    Type: Number
+    Default: 65536000
+    Description: >
+      RDS NetworkTransmitThroughput (bytes/sec) sustained for 3x5min periods.
+      ~50% of the gp3 baseline throughput (125 MiB/s, shared between receive
+      and transmit).
 
 Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
@@ -192,6 +255,217 @@ Resources:
       OKActions:
         - !Ref AlarmTopic
 
+  # --- RDS alarms ---
+  RdsCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-cpu-high"
+      AlarmDescription: RDS instance CPUUtilization above threshold.
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsCpuAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsFreeStorageSpaceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-free-storage-low"
+      AlarmDescription: RDS instance running low on free storage space.
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref RdsFreeStorageSpaceAlarmThresholdBytes
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsFreeableMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-freeable-memory-low"
+      AlarmDescription: RDS instance running low on freeable memory.
+      Namespace: AWS/RDS
+      MetricName: FreeableMemory
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsFreeableMemoryAlarmThresholdBytes
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsDatabaseConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-connections-high"
+      AlarmDescription: RDS DatabaseConnections above threshold.
+      Namespace: AWS/RDS
+      MetricName: DatabaseConnections
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsDatabaseConnectionsAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsReadLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-read-latency-high"
+      AlarmDescription: RDS ReadLatency above threshold.
+      Namespace: AWS/RDS
+      MetricName: ReadLatency
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsReadLatencyAlarmThresholdSeconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsWriteLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-write-latency-high"
+      AlarmDescription: RDS WriteLatency above threshold.
+      Namespace: AWS/RDS
+      MetricName: WriteLatency
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsWriteLatencyAlarmThresholdSeconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsReadIopsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-read-iops-high"
+      AlarmDescription: RDS ReadIOPS above threshold.
+      Namespace: AWS/RDS
+      MetricName: ReadIOPS
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsReadIopsAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsWriteIopsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-write-iops-high"
+      AlarmDescription: RDS WriteIOPS above threshold.
+      Namespace: AWS/RDS
+      MetricName: WriteIOPS
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsWriteIopsAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsNetworkReceiveThroughputAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-network-receive-throughput-high"
+      AlarmDescription: RDS NetworkReceiveThroughput above threshold.
+      Namespace: AWS/RDS
+      MetricName: NetworkReceiveThroughput
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsNetworkReceiveThroughputAlarmThresholdBytes
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  RdsNetworkTransmitThroughputAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-network-transmit-throughput-high"
+      AlarmDescription: RDS NetworkTransmitThroughput above threshold.
+      Namespace: AWS/RDS
+      MetricName: NetworkTransmitThroughput
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsNetworkTransmitThroughputAlarmThresholdBytes
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
   # --- Log-based error alarm ---
   ErrorLogMetricFilter:
     Type: AWS::Logs::MetricFilter
@@ -285,6 +559,52 @@ Resources:
                       ["${ErrorLogNamespace}", "ErrorCount", {"label": "ERROR lines", "stat": "Sum"}]
                     ]
                   }
+                },
+                {
+                  "type": "metric", "x": 0, "y": 18, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "RDS CPU / Connections",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "CPU %"}],
+                      ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Connections", "yAxis": "right"}]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric", "x": 12, "y": 18, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "RDS Free Storage / Memory",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Free Storage (bytes)"}],
+                      ["AWS/RDS", "FreeableMemory", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Freeable Memory (bytes)"}]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric", "x": 0, "y": 24, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "RDS Latency",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/RDS", "ReadLatency", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Read Latency (s)"}],
+                      ["AWS/RDS", "WriteLatency", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Write Latency (s)"}]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric", "x": 12, "y": 24, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "RDS IOPS / Network Throughput",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/RDS", "ReadIOPS", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Read IOPS"}],
+                      ["AWS/RDS", "WriteIOPS", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Write IOPS"}],
+                      ["AWS/RDS", "NetworkReceiveThroughput", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Network Receive (B/s)", "yAxis": "right"}],
+                      ["AWS/RDS", "NetworkTransmitThroughput", "DBInstanceIdentifier", "${DbInstanceIdentifier}", {"label": "Network Transmit (B/s)", "yAxis": "right"}]
+                    ]
+                  }
                 }
               ]
             }
@@ -296,6 +616,7 @@ Resources:
             TargetGroupFullName:
               Fn::ImportValue: !Sub "${ProjectName}-TargetGroupFullName"
             ErrorLogNamespace: !Sub "${ProjectName}/Backend"
+            DbInstanceIdentifier: !Ref DbInstanceIdentifier
 
 Outputs:
   AlarmTopicArn:

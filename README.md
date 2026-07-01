@@ -55,7 +55,7 @@ backend-service`.
 | `templates/infra/rds.yml` | `dev-assistant-rds` | CI | **RDS PostgreSQL 16**, Single-AZ, en las subredes privadas (importa `PrivateSubnet1/2` y `RdsSecurityGroupId`). Password maestra self-managed inyectada por `RDS_MASTER_PASSWORD` (secret de GitHub). La instancia tiene `DeletionPolicy`/`UpdateReplacePolicy: Snapshot`. Exporta `RdsEndpointAddress`, `RdsEndpointPort`. |
 | `templates/infra/ecs-cluster.yml` | `dev-assistant-ecs-cluster` | CI | **Cluster ECS**, log group de CloudWatch y el rol de ejecución de la tarea. Exporta `ClusterName`, `BackendLogGroupName`, `ExecutionRoleArn`. |
 | `templates/infra/alb.yml` | `dev-assistant-alb` | CI | **ALB** (HTTP + WS) y su Target Group. Importa `AlbSecurityGroupId`, `PublicSubnet1/2`, `VpcId`. Exporta `AlbDnsName`, `TargetGroupArn`, `LoadBalancerFullName`, `TargetGroupFullName`. |
-| `templates/infra/observability.yml` | `dev-assistant-observability` | CI | **Tópico SNS** de alarmas (con suscripción por email opcional), **alarmas CloudWatch** de CPU/memoria del servicio ECS, hosts no saludables/5XX/latencia del ALB y errores en el log del backend, y un **dashboard** único. Importa `ClusterName`, `BackendLogGroupName`, `LoadBalancerFullName`, `TargetGroupFullName`. Exporta `AlarmTopicArn`. |
+| `templates/infra/observability.yml` | `dev-assistant-observability` | CI | **Tópico SNS** de alarmas (con suscripción por email opcional), **alarmas CloudWatch** de CPU/memoria del servicio ECS, hosts no saludables/5XX/latencia del ALB, CPU/storage/memoria/conexiones/latencia/IOPS/throughput de RDS y errores en el log del backend, y un **dashboard** único. Importa `ClusterName`, `BackendLogGroupName`, `LoadBalancerFullName`, `TargetGroupFullName`. Exporta `AlarmTopicArn`. |
 | `templates/app/backend-service.yml` | `dev-assistant-backend-service` | CI | Rol de tarea, **task definition** y **servicio Fargate**. Importa el cluster, el rol de ejecución/log group, las subredes, `app-sg` y el Target Group. |
 
 ### Notas por stack
@@ -100,9 +100,10 @@ backend-service`.
   subida a mano al stack `ecr`. No sube de 1: el contenedor corre `migrationsRun: true`
   (TypeORM) al boot, y tareas concurrentes se pisarían al aplicar las mismas migraciones
   (ver `dev-assistant-backend/docs/deployment.md`).
-- **observability**: cubre ECS + ALB + logs; **RDS queda fuera** de las alarmas/dashboard
-  en esta fase (no tiene métricas propias configuradas todavía, aunque ya es un stack de
-  CloudFormation). El parámetro
+- **observability**: cubre ECS + ALB + logs + **RDS** (CPU, storage libre, memoria libre,
+  conexiones, latencia de lectura/escritura, IOPS y throughput de red), todo con métricas
+  estándar de CloudWatch (namespace `AWS/RDS`, gratis) — no hace falta Enhanced Monitoring
+  ni Performance Insights, igual que documenta la sección de `rds` más abajo. El parámetro
   `AlarmEmail` (en `params/observability.json`) está vacío por defecto — sin él no se crea
   la suscripción SNS y las alarmas no notifican a nadie. Al completarlo y desplegar, AWS
   manda un mail de confirmación al endpoint que **hay que confirmar a mano** (si no, SNS
