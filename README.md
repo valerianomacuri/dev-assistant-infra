@@ -29,13 +29,13 @@ Internet ──HTTP:80──> ALB (público) ──HTTP:3000──> ECS Fargate 
   `JWT_SECRET`, `DATABASE_URL`) viven en **SSM Parameter Store** (SecureString, gratis).
   No se usa Secrets Manager.
 
-## Stacks (7 capas)
+## Stacks (8 capas)
 
 Se enlazan con `Export` / `ImportValue`. **RDS no es un stack.** El único stack manual es
 `bootstrap` (`templates/bootstrap/github-oidc.yml`): crea el proveedor OIDC de GitHub y
 **los dos roles** que asumen el CI de infra y el CI del backend (ya no están en stacks
-separados). Los otros 6 los gestiona el CI, en este orden de dependencias:
-`network → security → ecr → ecs-cluster → alb → backend-service`.
+separados). Los otros 7 los gestiona el CI, en este orden de dependencias:
+`network → security → ecr → ecs-cluster → alb → observability → backend-service`.
 
 | Plantilla | Stack | Despliega | Qué crea |
 |-----------|-------|-----------|----------|
@@ -44,7 +44,8 @@ separados). Los otros 6 los gestiona el CI, en este orden de dependencias:
 | `templates/infra/security.yml` | `dev-assistant-security` | CI | Security Groups `alb-sg` y `app-sg`. Importa `VpcId`. Exporta `AlbSecurityGroupId`, `AppSecurityGroupId`. |
 | `templates/infra/ecr.yml` | `dev-assistant-ecr` | CI | Repositorio **ECR** de la imagen del backend. |
 | `templates/infra/ecs-cluster.yml` | `dev-assistant-ecs-cluster` | CI | **Cluster ECS**, log group de CloudWatch y el rol de ejecución de la tarea. Exporta `ClusterName`, `BackendLogGroupName`, `ExecutionRoleArn`. |
-| `templates/infra/alb.yml` | `dev-assistant-alb` | CI | **ALB** (HTTP + WS) y su Target Group. Importa `AlbSecurityGroupId`, `PublicSubnet1/2`, `VpcId`. Exporta `AlbDnsName`, `TargetGroupArn`. |
+| `templates/infra/alb.yml` | `dev-assistant-alb` | CI | **ALB** (HTTP + WS) y su Target Group. Importa `AlbSecurityGroupId`, `PublicSubnet1/2`, `VpcId`. Exporta `AlbDnsName`, `TargetGroupArn`, `LoadBalancerFullName`, `TargetGroupFullName`. |
+| `templates/infra/observability.yml` | `dev-assistant-observability` | CI | **Tópico SNS** de alarmas (con suscripción por email opcional), **alarmas CloudWatch** de CPU/memoria del servicio ECS, hosts no saludables/5XX/latencia del ALB y errores en el log del backend, y un **dashboard** único. Importa `ClusterName`, `BackendLogGroupName`, `LoadBalancerFullName`, `TargetGroupFullName`. Exporta `AlarmTopicArn`. |
 | `templates/app/backend-service.yml` | `dev-assistant-backend-service` | CI | Rol de tarea, **task definition** y **servicio Fargate**. Importa el cluster, el rol de ejecución/log group, las subredes, `app-sg` y el Target Group. |
 
 ### Notas por stack
@@ -67,6 +68,13 @@ separados). Los otros 6 los gestiona el CI, en este orden de dependencias:
   _circuit breaker_ con rollback. Lee los 4 secretos desde SSM `/dev-assistant/*`.
   **`DesiredCount` arranca en 0** a propósito: no hay imagen en ECR hasta que el CI/CD del
   backend publica la primera, y es ese CI/CD el que activa las tareas.
+- **observability**: cubre ECS + ALB + logs; **RDS queda fuera** porque no es un stack
+  (se crea a mano, ver [Crear RDS](#paso-por-consola--crear-rds-postgresql)). El parámetro
+  `AlarmEmail` (en `params/observability.json`) está vacío por defecto — sin él no se crea
+  la suscripción SNS y las alarmas no notifican a nadie. Al completarlo y desplegar, AWS
+  manda un mail de confirmación al endpoint que **hay que confirmar a mano** (si no, SNS
+  descarta las notificaciones). Con `DesiredCount: 0` es normal ver los widgets de ECS del
+  dashboard sin datos hasta que el backend activa la primera tarea.
 
 ## Configuración (parámetros)
 
@@ -105,8 +113,10 @@ cuenta/entorno viven en `params/*.json`.
 
 3. **Sube el repo y deja que el CI despliegue.** Con la rama `main` en GitHub, el push
    dispara el workflow: tras la aprobación del Environment `production`, despliega
-   `network → security → ecr → ecs-cluster → alb → backend-service`. El servicio queda con
-   **0 tareas** (aún sin imagen).
+   `network → security → ecr → ecs-cluster → alb → observability → backend-service`. El
+   servicio queda con **0 tareas** (aún sin imagen). Si querés recibir alarmas por email,
+   completá `AlarmEmail` en `params/observability.json` antes de este paso (o después, con
+   un redeploy del stack `observability`) y confirmá el mail que manda SNS.
 
 4. **Crea el RDS por consola** (ver [Crear RDS](#paso-por-consola--crear-rds-postgresql))
    con su propia red. Copia su **Endpoint**.
@@ -246,7 +256,8 @@ Hoy el ALB expone **HTTP:80**. Para servir la API por **HTTPS** en un dominio pr
 | RDS db.t4g.micro single-AZ + 20 GB gp3 | ~US$15 |
 | SSM Parameter Store (Standard) | gratis |
 | CloudWatch Logs + ECR storage | ~US$1–3 |
-| **Total** | **~US$50–55** |
+| CloudWatch Alarms (6) + SNS + Dashboard | ~US$0.60 (dashboard gratis: primeros 3 por cuenta) |
+| **Total** | **~US$51–56** |
 
 > Con `DesiredCount: 0` y sin imagen, el costo de Fargate es **US$0** hasta que el CI/CD
 > del backend activa la tarea.
@@ -258,7 +269,7 @@ tarea pública directa (se pierde el WS gestionado).
 ## Verificación end-to-end
 
 1. **Stacks OK**: en la consola de **CloudFormation**, los stacks `network`, `security`,
-   `ecr`, `ecs-cluster`, `alb` y `backend-service` en `CREATE_COMPLETE` /
+   `ecr`, `ecs-cluster`, `alb`, `observability` y `backend-service` en `CREATE_COMPLETE` /
    `UPDATE_COMPLETE`.
 2. **Salud**: `curl http://<AlbDnsName>/health` → `{"status":"ok"}` (valida ALB + tarea
    sana). Usa el output `AlbDnsName` del stack `alb`.
@@ -267,6 +278,10 @@ tarea pública directa (se pierde el WS gestionado).
 4. **App**: probar registro/login (JWT) y el chat (incluida la conexión WebSocket).
 5. **CI/CD**: un push a `main` del repo backend debe construir, publicar en ECR y dejar el
    servicio `stable` con la nueva imagen.
+6. **Observability**: abrí el output `DashboardUrl` del stack `observability` y confirmá
+   que los widgets de ALB (requests, hosts saludables) muestran datos. Las alarmas deberían
+   estar en `OK` (o `INSUFFICIENT_DATA` si el servicio sigue en `DesiredCount: 0`), visibles
+   en CloudWatch → Alarms con el prefijo `dev-assistant-`.
 
 > La subida de documentos (S3), la ingesta asíncrona (SQS) y el PDF de stats (Lambda) están
 > **fuera de esta fase**: el Task Role aún no tiene esos permisos.
@@ -279,7 +294,8 @@ tarea pública directa (se pierde el WS gestionado).
 - **Para borrar todo**: elimina **primero a mano** el RDS y su red propia (la instancia
   `dev-assistant-postgres` —con snapshot final si quieres conservar los datos—, luego el DB
   subnet group `dev-assistant-db-subnets` y el security group `dev-assistant-rds-sg`).
-  Después borra los stacks en orden inverso (`backend-service → alb → ecs-cluster → ecr →
-  security → network → cicd-infra`). El stack `cicd-infra` (bootstrap) se puede borrar en
+  Después borra los stacks en orden inverso (`backend-service → observability → alb →
+  ecs-cluster → ecr → security → network → cicd-infra`). El stack `cicd-infra` (bootstrap)
+  se puede borrar en
   cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo template ya
   no queda ningún `Fn::ImportValue` de otro stack hacia su export `OidcProviderArn`.

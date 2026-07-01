@@ -4,7 +4,8 @@ name: Deploy infra
 #   - En cada PR: lint (cfn-lint) + seguridad (checkov) + validate-template, y un
 #     "plan" que crea change sets para previsualizar el diff (sin cambiar nada).
 #   - En push a main: despliega network -> security -> ecr -> ecs-cluster -> alb
-#     -> backend-service, tras la aprobación manual del Environment `production`.
+#     -> observability -> backend-service, tras la aprobación manual del
+#     Environment `production`.
 # El stack de bootstrap (OIDC + InfraDeployRole + DeployRole, templates/bootstrap/
 # github-oidc.yml) NO lo gestiona el CI: define los propios roles que aquí se
 # asumen, así que se despliega a mano.
@@ -75,7 +76,7 @@ jobs:
           {
             echo "## Plan de infraestructura (change sets)"
             echo ""
-            for slug in network security ecr ecs-cluster alb backend-service; do
+            for slug in network security ecr ecs-cluster alb observability backend-service; do
               bash scripts/cfn.sh changeset "$slug"
             done
           } | tee plan.md >> "$GITHUB_STEP_SUMMARY"
@@ -104,7 +105,9 @@ jobs:
       # El bootstrap (OIDC + InfraDeployRole + DeployRole) ya está desplegado a
       # mano. El CI no lo toca. Orden: network y security antes que alb (alb
       # importa el SG y las subredes); ecs-cluster y alb antes que
-      # backend-service (importa el cluster y el target group).
+      # observability (importa ClusterName, BackendLogGroupName,
+      # LoadBalancerFullName y TargetGroupFullName) y backend-service (importa
+      # el cluster y el target group).
       - name: Deploy network
         run: bash scripts/cfn.sh deploy network
       - name: Deploy security
@@ -115,5 +118,7 @@ jobs:
         run: bash scripts/cfn.sh deploy ecs-cluster
       - name: Deploy alb
         run: bash scripts/cfn.sh deploy alb
+      - name: Deploy observability
+        run: bash scripts/cfn.sh deploy observability
       - name: Deploy backend-service
         run: bash scripts/cfn.sh deploy backend-service

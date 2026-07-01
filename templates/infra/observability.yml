@@ -1,0 +1,309 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant-backend - CloudWatch observability: SNS topic for alerts (with
+  an optional email subscription), alarms on the ECS service (CPU/memory), the
+  ALB (unhealthy hosts, 5XX, latency) and a log-based error count on the
+  backend's log group, plus a single dashboard aggregating all of it. RDS is
+  out of scope (it's created by hand outside CloudFormation). Imports
+  ClusterName and BackendLogGroupName from ecs-cluster, and
+  LoadBalancerFullName / TargetGroupFullName from alb.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+  BackendServiceName:
+    Type: String
+    Default: dev-assistant-backend
+    Description: >
+      Fargate service name (fixed by backend-service.yml as "<ProjectName>-backend",
+      not exported there). Only override if that naming changes.
+  AlarmEmail:
+    Type: String
+    Default: "leonardo.valeriano.public@gmail.com"
+    Description: >
+      Email to subscribe to the alarm SNS topic. Leave empty to skip the
+      subscription (e.g. in CI); AWS sends a confirmation link once set.
+  CpuAlarmThreshold:
+    Type: Number
+    Default: 80
+    Description: ECS CPUUtilization (%) sustained for 3x5min periods.
+  MemoryAlarmThreshold:
+    Type: Number
+    Default: 80
+    Description: ECS MemoryUtilization (%) sustained for 3x5min periods.
+  UnhealthyHostAlarmThreshold:
+    Type: Number
+    Default: 1
+    Description: ALB UnHealthyHostCount sustained for 2x1min periods.
+  Http5xxAlarmThreshold:
+    Type: Number
+    Default: 10
+    Description: ALB HTTPCode_Target_5XX_Count (sum) in 5min.
+  ResponseTimeAlarmThreshold:
+    Type: Number
+    Default: 2
+    Description: ALB TargetResponseTime p90 (seconds) in 5min.
+  ErrorLogAlarmThreshold:
+    Type: Number
+    Default: 5
+    Description: Backend log lines matching "ERROR" (sum) in 5min.
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+  # --- Notifications ---
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-alarms"
+      KmsMasterKeyId: alias/aws/sns
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # --- ECS service alarms ---
+  EcsCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-cpu-high"
+      AlarmDescription: ECS service CPUUtilization above threshold.
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-ClusterName"
+        - Name: ServiceName
+          Value: !Ref BackendServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref CpuAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  EcsMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-memory-high"
+      AlarmDescription: ECS service MemoryUtilization above threshold.
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-ClusterName"
+        - Name: ServiceName
+          Value: !Ref BackendServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref MemoryAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  # --- ALB alarms ---
+  AlbUnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-unhealthy-hosts"
+      AlarmDescription: ALB has at least one unhealthy target.
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-LoadBalancerFullName"
+        - Name: TargetGroup
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-TargetGroupFullName"
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref UnhealthyHostAlarmThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  Alb5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-5xx-high"
+      AlarmDescription: ALB target 5XX responses above threshold.
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-LoadBalancerFullName"
+        - Name: TargetGroup
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-TargetGroupFullName"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref Http5xxAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  AlbResponseTimeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-response-time-high"
+      AlarmDescription: ALB target response time (p90) above threshold.
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      ExtendedStatistic: p90
+      Dimensions:
+        - Name: LoadBalancer
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-LoadBalancerFullName"
+        - Name: TargetGroup
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-TargetGroupFullName"
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref ResponseTimeAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  # --- Log-based error alarm ---
+  ErrorLogMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName:
+        Fn::ImportValue: !Sub "${ProjectName}-BackendLogGroupName"
+      FilterPattern: '{ $.level = "error" }'
+      MetricTransformations:
+        - MetricName: ErrorCount
+          MetricNamespace: !Sub "${ProjectName}/Backend"
+          MetricValue: "1"
+          DefaultValue: 0
+
+  ErrorLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-backend-error-logs-high"
+      AlarmDescription: Backend log lines matching { $.level = "error" } above threshold.
+      Namespace: !Sub "${ProjectName}/Backend"
+      MetricName: ErrorCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref ErrorLogAlarmThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  # --- Dashboard ---
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ProjectName}-observability"
+      DashboardBody:
+        Fn::Sub:
+          - |
+            {
+              "widgets": [
+                {
+                  "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "ECS CPU / Memory",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/ECS", "CPUUtilization", "ClusterName", "${ClusterName}", "ServiceName", "${ServiceName}", {"label": "CPU %"}],
+                      ["AWS/ECS", "MemoryUtilization", "ClusterName", "${ClusterName}", "ServiceName", "${ServiceName}", {"label": "Memory %"}]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "ALB Healthy / Unhealthy Hosts",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/ApplicationELB", "HealthyHostCount", "LoadBalancer", "${LoadBalancerFullName}", "TargetGroup", "${TargetGroupFullName}", {"label": "Healthy"}],
+                      ["AWS/ApplicationELB", "UnHealthyHostCount", "LoadBalancer", "${LoadBalancerFullName}", "TargetGroup", "${TargetGroupFullName}", {"label": "Unhealthy"}]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "ALB Requests / 5XX",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${LoadBalancerFullName}", "TargetGroup", "${TargetGroupFullName}", {"label": "Requests", "stat": "Sum"}],
+                      ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", "${LoadBalancerFullName}", "TargetGroup", "${TargetGroupFullName}", {"label": "5XX", "stat": "Sum"}]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "ALB Response Time (p90)",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${LoadBalancerFullName}", "TargetGroup", "${TargetGroupFullName}", {"label": "p90", "stat": "p90"}]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric", "x": 0, "y": 12, "width": 24, "height": 6,
+                  "properties": {
+                    "title": "Backend Error Logs",
+                    "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                    "metrics": [
+                      ["${ErrorLogNamespace}", "ErrorCount", {"label": "ERROR lines", "stat": "Sum"}]
+                    ]
+                  }
+                }
+              ]
+            }
+          - ClusterName:
+              Fn::ImportValue: !Sub "${ProjectName}-ClusterName"
+            ServiceName: !Ref BackendServiceName
+            LoadBalancerFullName:
+              Fn::ImportValue: !Sub "${ProjectName}-LoadBalancerFullName"
+            TargetGroupFullName:
+              Fn::ImportValue: !Sub "${ProjectName}-TargetGroupFullName"
+            ErrorLogNamespace: !Sub "${ProjectName}/Backend"
+
+Outputs:
+  AlarmTopicArn:
+    Description: SNS topic ARN for CloudWatch alarms. Subscribe other endpoints here if needed.
+    Value: !Ref AlarmTopic
+    Export:
+      Name: !Sub "${ProjectName}-AlarmTopicArn"
+  DashboardUrl:
+    Description: Console URL of the observability dashboard.
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${Dashboard}"

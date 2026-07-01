@@ -12,9 +12,9 @@
 #
 #   bootstrap  (bootstrap MANUAL: OIDC + InfraDeployRole + DeployRole; el CI no
 #              lo despliega, solo lo valida)
-#   network | security | ecr | ecs-cluster | alb | backend-service
+#   network | security | ecr | ecs-cluster | alb | observability | backend-service
 #              (los gestiona el CI, en ese orden: network y security antes de
-#              alb; ecs-cluster y alb antes de backend-service)
+#              alb; ecs-cluster y alb antes de observability y backend-service)
 #
 # Los params ESTÁTICOS van en params/*.json. Variables: AWS_REGION (def.
 # us-east-1), PROJECT_NAME (def. dev-assistant).
@@ -22,7 +22,7 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT="${PROJECT_NAME:-dev-assistant}"
-SLUGS=(bootstrap network security ecr ecs-cluster alb backend-service)
+SLUGS=(bootstrap network security ecr ecs-cluster alb observability backend-service)
 
 # Mapea slug -> ruta real del template.
 template_path() {
@@ -33,6 +33,7 @@ template_path() {
     ecr)             echo "templates/infra/ecr.yml" ;;
     ecs-cluster)      echo "templates/infra/ecs-cluster.yml" ;;
     alb)              echo "templates/infra/alb.yml" ;;
+    observability)    echo "templates/infra/observability.yml" ;;
     backend-service)  echo "templates/app/backend-service.yml" ;;
     *) echo "slug desconocido: $1" >&2; return 1 ;;
   esac
@@ -47,6 +48,7 @@ stack_name() {
     ecr)             echo "${PROJECT}-ecr" ;;
     ecs-cluster)      echo "${PROJECT}-ecs-cluster" ;;
     alb)              echo "${PROJECT}-alb" ;;
+    observability)    echo "${PROJECT}-observability" ;;
     backend-service)  echo "${PROJECT}-backend-service" ;;
     *) echo "slug desconocido: $1" >&2; return 1 ;;
   esac

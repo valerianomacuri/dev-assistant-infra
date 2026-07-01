@@ -108,3 +108,17 @@ Outputs:
     Value: !Ref TargetGroup
     Export:
       Name: !Sub "${ProjectName}-TargetGroupArn"
+  LoadBalancerFullName:
+    Description: >
+      ALB dimension value for CloudWatch metrics (app/<name>/<id>). Used by the
+      observability stack's alarms and dashboard.
+    Value: !GetAtt LoadBalancer.LoadBalancerFullName
+    Export:
+      Name: !Sub "${ProjectName}-LoadBalancerFullName"
+  TargetGroupFullName:
+    Description: >
+      Target Group dimension value for CloudWatch metrics (targetgroup/<name>/<id>).
+      Used by the observability stack's alarms and dashboard.
+    Value: !GetAtt TargetGroup.TargetGroupFullName
+    Export:
+      Name: !Sub "${ProjectName}-TargetGroupFullName"
