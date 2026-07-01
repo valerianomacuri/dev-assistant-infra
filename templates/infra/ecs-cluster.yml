@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant-backend - Service (layer 4/4). ALB over HTTP (WebSockets for
+  socket.io), ECS cluster, task definition and Fargate service. The task runs in
+  public subnets with a public IP (no NAT) and only receives traffic from the ALB.
+  Injects the 4 secrets from SSM Parameter Store. HTTPS + custom domain (ACM +
+  HTTPS listener) are scaffolded as commented blocks for a future roadmap step.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+    
+Resources:
+  # --- ECS ---
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ProjectName
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-backend"
+      RetentionInDays: 14
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/*"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+
+
+Outputs:
+  ClusterName:
+    Description: Workflow ECS_CLUSTER variable.
+    Value: !Ref Cluster
+    Export:
+      Name: !Sub "${ProjectName}-ClusterName"
+
+  BackendLogGroupName:
+    Description: CloudWatch Logs group for ECS tasks.
+    Value: !Ref BackendLogGroup
+    Export:
+      Name: !Sub "${ProjectName}-BackendLogGroupName"
+
+  ExecutionRoleArn:
+    Description: ECS Task Execution Role ARN.
+    Value: !GetAtt ExecutionRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-ExecutionRoleArn"    

@@ -1,0 +1,49 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant - INFRA CI/CD (bootstrap). GitHub OIDC provider (one per account)
+  and the role that the infra repo's GitHub Actions assumes (no static keys) to
+  validate and deploy the CloudFormation stacks. This is a bootstrap stack: it is
+  deployed MANUALLY once because it defines the very role the CI uses; the CI does
+  not manage itself.
+  dev-assistant-backend - backend CI/CD: ECR for the image and an IAM role
+  assumed by GitHub Actions via OIDC to push and deploy to ECS. The OIDC provider
+  is created by the 00-cicd-infra bootstrap.
+
+Parameters:
+  EcrRepositoryName:
+    Type: String
+    Default: dev-assistant-backend
+
+Resources:
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref EcrRepositoryName
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+Outputs:
+  EcrRepositoryName:
+    Value: !Ref EcrRepository
+  EcrRepositoryUri:
+    Description: Base URI of the ECR repo (without tag).
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}"
+
+

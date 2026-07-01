@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant-backend - Service (layer 4/4). ALB over HTTP (WebSockets for
+  socket.io), ECS cluster, task definition and Fargate service. The task runs in
+  public subnets with a public IP (no NAT) and only receives traffic from the ALB.
+  Injects the 4 secrets from SSM Parameter Store. HTTPS + custom domain (ACM +
+  HTTPS listener) are scaffolded as commented blocks for a future roadmap step.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+  EcrRepositoryName:
+    Type: String
+    Default: dev-assistant-backend
+  ImageTag:
+    Type: String
+    Default: latest
+  ContainerName:
+    Type: String
+    Default: app
+    Description: Must match the workflow's CONTAINER_NAME variable.
+  ContainerPort:
+    Type: Number
+    Default: 3000
+  TaskCpu:
+    Type: String
+    Default: "512"
+    Description: CPU units (512 = 0.5 vCPU).
+  TaskMemory:
+    Type: String
+    Default: "1024"
+    Description: Memory in MB.
+  DesiredCount:
+    Type: Number
+    Default: 0
+    Description: >
+      Starts at 0 on purpose: there is no image in ECR until the backend repo's
+      CI/CD pushes the first one. The backend CI/CD then activates the task(s).
+  CorsOrigins:
+    Type: String
+    Default: "*"
+    Description: Allowed CORS origins (the deployed frontend URL).
+  AnthropicModel:
+    Type: String
+    Default: claude-haiku-4-5
+  OpenAiEmbeddingModel:
+    Type: String
+    Default: text-embedding-3-small
+
+Resources:
+  # Task role: minimal. Only ECS Exec (to debug / run one-off SQL).
+  # No S3/SQS/Lambda permissions in this phase.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ecs-exec
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-backend"
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn:
+        Fn::ImportValue:
+          !Sub "${ProjectName}-ExecutionRoleArn"
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref ContainerName
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}:${ImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              AppProtocol: http
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: PORT
+              Value: !Sub "${ContainerPort}"
+            - Name: CORS_ORIGINS
+              Value: !Ref CorsOrigins
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: S3_REGION
+              Value: !Ref AWS::Region
+            - Name: ANTHROPIC_MODEL
+              Value: !Ref AnthropicModel
+            - Name: OPENAI_EMBEDDING_MODEL
+              Value: !Ref OpenAiEmbeddingModel
+          Secrets:
+            # DATABASE_URL is an SSM SecureString. RDS is created in the console
+            # with its own network (manual subnet group + SG), outside the stacks;
+            # the endpoint/password go into this parameter.
+            - Name: DATABASE_URL
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/DATABASE_URL"
+            - Name: ANTHROPIC_API_KEY
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/ANTHROPIC_API_KEY"
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/OPENAI_API_KEY"
+            - Name: JWT_SECRET
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dev-assistant/JWT_SECRET"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group:
+                Fn::ImportValue:
+                  !Sub "${ProjectName}-BackendLogGroupName"
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-backend"
+      Cluster: 
+        Fn::ImportValue: !Sub "${ProjectName}-ClusterName"
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableExecuteCommand: true
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnet1"
+            - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnet2"
+          SecurityGroups:
+            - Fn::ImportValue: !Sub "${ProjectName}-AppSecurityGroupId"
+      LoadBalancers:
+        - ContainerName: !Ref ContainerName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn:
+            Fn::ImportValue: !Sub "${ProjectName}-TargetGroupArn"
+
+Outputs:
+  ServiceName:
+    Description: Workflow ECS_SERVICE variable.
+    Value: !GetAtt Service.Name
+  TaskFamily:
+    Description: Workflow ECS_TASK_FAMILY variable.
+    Value: !Sub "${ProjectName}-backend"
+  ContainerName:
+    Description: Workflow CONTAINER_NAME variable.
+    Value: !Ref ContainerName

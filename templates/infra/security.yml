@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant-backend - Network: VPC with 2 public subnets across 2 AZs,
+  Internet Gateway and Security Groups for the ALB and the app. Fargate uses a
+  public IP for direct egress to the Internet, avoiding a NAT Gateway. RDS is
+  managed outside this stack.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+    Description: Prefix for resource names and exports.
+
+Resources:
+  # --- Security Groups ---
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public ALB (HTTP from the Internet; HTTPS reserved for roadmap).
+      VpcId: 
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP (current entrypoint)
+        # 443 kept open ready for the HTTPS roadmap (no HTTPS listener yet).
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS (roadmap)
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb-sg"
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Fargate API tasks. Only the ALB can reach port 3000.
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: App traffic from the ALB
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-app-sg"
+
+Outputs:
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-AlbSecurityGroupId"
+  AppSecurityGroupId:
+    Value: !Ref AppSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-AppSecurityGroupId"
