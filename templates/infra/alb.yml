@@ -1,10 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend - Service (layer 4/4). ALB over HTTP (WebSockets for
-  socket.io), ECS cluster, task definition and Fargate service. The task runs in
-  public subnets with a public IP (no NAT) and only receives traffic from the ALB.
-  Injects the 4 secrets from SSM Parameter Store. HTTPS + custom domain (ACM +
-  HTTPS listener) are scaffolded as commented blocks for a future roadmap step.
+  dev-assistant-backend - ALB over HTTP (WebSockets for socket.io) and its
+  Target Group. HTTPS + custom domain (ACM certificate + HTTPS listener) are
+  scaffolded as commented blocks for a future roadmap step.
 
 Parameters:
   ProjectName:

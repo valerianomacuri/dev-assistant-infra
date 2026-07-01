@@ -1,3 +1,5 @@
-# Config de cfn-lint. Lintea los 3 templates del proyecto.
+# Config de cfn-lint. Lintea los 7 templates del proyecto (repartidos en
+# templates/{bootstrap,infra,app}/ con extensión .yaml o .yml según el archivo).
 templates:
-  - templates/*.yaml
+  - templates/**/*.yaml
+  - templates/**/*.yml

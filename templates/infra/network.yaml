@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   dev-assistant-backend - Network: VPC with 2 public subnets across 2 AZs,
-  Internet Gateway and Security Groups for the ALB and the app. Fargate uses a
-  public IP for direct egress to the Internet, avoiding a NAT Gateway. RDS is
-  managed outside this stack.
+  Internet Gateway and public routing. Fargate uses a public IP for direct
+  egress to the Internet, avoiding a NAT Gateway. Security Groups live in the
+  security stack. RDS is managed outside this stack.
 
 Parameters:
   ProjectName:

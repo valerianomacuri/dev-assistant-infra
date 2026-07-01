@@ -1,10 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend - Service (layer 4/4). ALB over HTTP (WebSockets for
-  socket.io), ECS cluster, task definition and Fargate service. The task runs in
-  public subnets with a public IP (no NAT) and only receives traffic from the ALB.
-  Injects the 4 secrets from SSM Parameter Store. HTTPS + custom domain (ACM +
-  HTTPS listener) are scaffolded as commented blocks for a future roadmap step.
+  dev-assistant-backend - ECS Cluster, the CloudWatch log group for the backend
+  tasks and the ECS task Execution Role (pulls the image and reads the 4 SSM
+  secrets). The task definition and Fargate service live in the backend-service
+  stack, which imports ExecutionRoleArn and BackendLogGroupName from here.
 
 Parameters:
   ProjectName:

@@ -1,0 +1,3 @@
+[
+  { "ParameterKey": "EcrRepositoryName", "ParameterValue": "dev-assistant-backend" }
+]

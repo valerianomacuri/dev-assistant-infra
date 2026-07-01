@@ -29,38 +29,44 @@ Internet ──HTTP:80──> ALB (público) ──HTTP:3000──> ECS Fargate 
   `JWT_SECRET`, `DATABASE_URL`) viven en **SSM Parameter Store** (SecureString, gratis).
   No se usa Secrets Manager.
 
-## Stacks (4 capas)
+## Stacks (7 capas)
 
-Se enlazan con `Export` / `ImportValue`. **RDS no es un stack.** El CI/CD del **infra** y
-el del **backend** están separados en dos stacks: `00-cicd-infra` (bootstrap **manual por
-consola**) y `02-cicd-backend` (lo gestiona el CI).
+Se enlazan con `Export` / `ImportValue`. **RDS no es un stack.** El único stack manual es
+`bootstrap` (`templates/bootstrap/github-oidc.yml`): crea el proveedor OIDC de GitHub y
+**los dos roles** que asumen el CI de infra y el CI del backend (ya no están en stacks
+separados). Los otros 6 los gestiona el CI, en este orden de dependencias:
+`network → security → ecr → ecs-cluster → alb → backend-service`.
 
 | Plantilla | Stack | Despliega | Qué crea |
 |-----------|-------|-----------|----------|
-| `templates/00-cicd-infra.yaml` | `dev-assistant-cicd-infra` | **Manual (consola)** | Proveedor **OIDC** de GitHub (único por cuenta) y el **`InfraDeployRole`** que asume el CI de infra. Exporta `OidcProviderArn`. |
-| `templates/01-network.yaml` | `dev-assistant-network` | CI | VPC `10.20.0.0/16`, 2 subredes públicas (2 AZ), Internet Gateway, rutas y 2 Security Groups (`alb-sg`, `app-sg`). |
-| `templates/02-cicd-backend.yaml` | `dev-assistant-cicd-backend` | CI | Repositorio **ECR** y el **`DeployRole`** que asume el CI del backend para publicar imágenes y desplegar en ECS. Importa `OidcProviderArn`. |
-| `templates/03-service.yaml` | `dev-assistant-service` | CI | **ALB** (HTTP + WS), **cluster ECS**, **task definition**, **servicio Fargate**, roles de ejecución/tarea y log group. |
+| `templates/bootstrap/github-oidc.yml` | `dev-assistant-cicd-infra` | **Manual (consola)** | Proveedor **OIDC** de GitHub (único por cuenta), el **`InfraDeployRole`** que asume el CI de infra y el **`DeployRole`** que asume el CI del backend. |
+| `templates/infra/network.yaml` | `dev-assistant-network` | CI | VPC `10.20.0.0/16`, 2 subredes públicas (2 AZ), Internet Gateway y rutas. Exporta `VpcId`, `PublicSubnet1`, `PublicSubnet2`. |
+| `templates/infra/security.yml` | `dev-assistant-security` | CI | Security Groups `alb-sg` y `app-sg`. Importa `VpcId`. Exporta `AlbSecurityGroupId`, `AppSecurityGroupId`. |
+| `templates/infra/ecr.yml` | `dev-assistant-ecr` | CI | Repositorio **ECR** de la imagen del backend. |
+| `templates/infra/ecs-cluster.yml` | `dev-assistant-ecs-cluster` | CI | **Cluster ECS**, log group de CloudWatch y el rol de ejecución de la tarea. Exporta `ClusterName`, `BackendLogGroupName`, `ExecutionRoleArn`. |
+| `templates/infra/alb.yml` | `dev-assistant-alb` | CI | **ALB** (HTTP + WS) y su Target Group. Importa `AlbSecurityGroupId`, `PublicSubnet1/2`, `VpcId`. Exporta `AlbDnsName`, `TargetGroupArn`. |
+| `templates/app/backend-service.yml` | `dev-assistant-backend-service` | CI | Rol de tarea, **task definition** y **servicio Fargate**. Importa el cluster, el rol de ejecución/log group, las subredes, `app-sg` y el Target Group. |
 
 ### Notas por stack
 
-- **00-cicd-infra** (bootstrap manual): crea el **proveedor OIDC** de GitHub y el
-  `InfraDeployRole`, que confía en `repo:<org>/dev-assistant-infra:*`. Se despliega **a
-  mano por la consola** una sola vez, porque define el propio rol que usa el CI. El
-  proveedor OIDC es **único por cuenta**: este stack asume que la cuenta aún no tiene uno
-  de GitHub.
-- **01-network**: la decisión de costo está aquí — Fargate vive en subredes **públicas**
-  (`MapPublicIpOnLaunch`) y sale a Internet por el IGW, evitando el NAT Gateway. `app-sg`
-  solo deja entrar al ALB. El RDS **no** está aquí (trae su propia red, ver
+- **bootstrap** (manual): crea el **proveedor OIDC** de GitHub, el `InfraDeployRole`
+  (confía en `repo:<org>/dev-assistant-infra:*`) y el `DeployRole` (confía en
+  `repo:<org>/dev-assistant-backend:*`, solo puede empujar a su ECR y actualizar el
+  servicio ECS). Se despliega **a mano por la consola** una sola vez, porque define los
+  propios roles que usa el CI — incluidos cambios futuros a `DeployRole`, que también van
+  a mano. El proveedor OIDC es **único por cuenta**: este stack asume que la cuenta aún no
+  tiene uno de GitHub.
+- **network**: la decisión de costo está aquí — Fargate vive en subredes **públicas**
+  (`MapPublicIpOnLaunch`) y sale a Internet por el IGW, evitando el NAT Gateway. El RDS
+  **no** está aquí (trae su propia red, ver
   [Crear RDS](#paso-por-consola--crear-rds-postgresql)).
-- **02-cicd-backend**: el `DeployRole` confía en `repo:<org>/dev-assistant-backend:*` y
-  solo puede empujar a su ECR y actualizar el servicio ECS. **Importa** el proveedor OIDC
-  del stack `cicd-infra` (no lo recrea).
-- **03-service**: la tarea corre con `assignPublicIp: ENABLED`,
-  `enableExecuteCommand: true` (depuración con ECS Exec) y _circuit breaker_ con rollback.
-  Lee los 4 secretos desde SSM `/dev-assistant/*`. **`DesiredCount` arranca en 0** a
-  propósito: no hay imagen en ECR hasta que el CI/CD del backend publica la primera, y es
-  ese CI/CD el que activa las tareas.
+- **security**: `app-sg` solo deja entrar al ALB (puerto 3000); depende del `VpcId` que
+  exporta `network`.
+- **ecs-cluster** / **alb** / **backend-service**: la tarea corre con
+  `assignPublicIp: ENABLED`, `enableExecuteCommand: true` (depuración con ECS Exec) y
+  _circuit breaker_ con rollback. Lee los 4 secretos desde SSM `/dev-assistant/*`.
+  **`DesiredCount` arranca en 0** a propósito: no hay imagen en ECR hasta que el CI/CD del
+  backend publica la primera, y es ese CI/CD el que activa las tareas.
 
 ## Configuración (parámetros)
 
@@ -71,7 +77,7 @@ los aplica con `scripts/cfn.sh`; lo que no esté en el JSON usa el `Default` de 
 plantilla. **No hay parámetros de tipo `AWS::SSM::Parameter::Value`**: los valores de
 cuenta/entorno viven en `params/*.json`.
 
-> `DomainName` (en `params/03-service.json`) es **cosmético** mientras la API sea HTTP: se
+> `DomainName` (en `params/alb.json`) es **cosmético** mientras la API sea HTTP: se
 > usará al activar HTTPS. Hoy la API se alcanza por el **DNS del ALB** (output `AlbDnsName`).
 
 ## Requisitos previos
@@ -85,11 +91,11 @@ cuenta/entorno viven en `params/*.json`.
 
 ## Puesta en marcha (una sola vez)
 
-1. **Bootstrap del CI de infra (consola).** En la consola de AWS →
+1. **Bootstrap del CI de infra y del backend (consola).** En la consola de AWS →
    **CloudFormation → Create stack → With new resources** → **Upload a template file** →
-   sube `templates/00-cicd-infra.yaml`. Nombre de stack `dev-assistant-cicd-infra`,
+   sube `templates/bootstrap/github-oidc.yml`. Nombre de stack `dev-assistant-cicd-infra`,
    reconoce la capacidad **IAM con nombres personalizados** (NAMED_IAM) y crea el stack.
-   En la pestaña **Outputs** copia `InfraDeployRoleArn`.
+   En la pestaña **Outputs** copia `InfraDeployRoleArn` y `DeployRoleArn`.
 
 2. **Configura este repositorio en GitHub** (Settings → Secrets and variables → Actions):
    - **Secret** `AWS_DEPLOY_ROLE_ARN` = `InfraDeployRoleArn` del paso 1.
@@ -99,7 +105,8 @@ cuenta/entorno viven en `params/*.json`.
 
 3. **Sube el repo y deja que el CI despliegue.** Con la rama `main` en GitHub, el push
    dispara el workflow: tras la aprobación del Environment `production`, despliega
-   `network → cicd-backend → service`. El servicio queda con **0 tareas** (aún sin imagen).
+   `network → security → ecr → ecs-cluster → alb → backend-service`. El servicio queda con
+   **0 tareas** (aún sin imagen).
 
 4. **Crea el RDS por consola** (ver [Crear RDS](#paso-por-consola--crear-rds-postgresql))
    con su propia red. Copia su **Endpoint**.
@@ -110,7 +117,8 @@ cuenta/entorno viven en `params/*.json`.
 
 6. **Configura el repositorio del backend en GitHub** (ver
    [Variables y secretos del backend](#variables-y-secretos-de-github-backend)) con el
-   output `DeployRoleArn` del stack `cicd-backend` y los outputs del `service`.
+   output `DeployRoleArn` del paso 1 y los outputs de los stacks `ecs-cluster` y
+   `backend-service`.
 
 7. **Primer despliegue del backend.** El CI/CD del backend construye la imagen, la publica
    en ECR y **activa la tarea** del servicio. A partir de aquí la API responde por
@@ -170,7 +178,7 @@ una sola vez:
 
 En **Settings → Secrets and variables → Actions** del repo `dev-assistant-backend`:
 
-- **Secret** `AWS_ROLE_ARN` = output `DeployRoleArn` del stack `cicd-backend`.
+- **Secret** `AWS_ROLE_ARN` = output `DeployRoleArn` del stack `cicd-infra` (bootstrap).
 - **Variables** (Repository variables):
 
   | Variable | Valor |
@@ -182,7 +190,9 @@ En **Settings → Secrets and variables → Actions** del repo `dev-assistant-ba
   | `ECS_TASK_FAMILY` | `dev-assistant-backend` |
   | `CONTAINER_NAME` | `app` |
 
-  (Los valores coinciden con los outputs del stack `service`.)
+  (`ECS_CLUSTER` coincide con el output `ClusterName` del stack `ecs-cluster`;
+  `ECS_SERVICE`, `ECS_TASK_FAMILY` y `CONTAINER_NAME` con los outputs del stack
+  `backend-service`.)
 
 ## CI/CD de la infraestructura
 
@@ -194,11 +204,12 @@ normal es por **Pull Request**.
   `validate-template`, y un **plan** que crea _change sets_ para previsualizar el diff de
   cada stack y lo publica como comentario del PR. **No cambia nada.**
 - **En push a `main`** (o `workflow_dispatch`): despliega en orden
-  `network → cicd-backend → service` tras la **aprobación manual** del Environment
-  `production`. Idempotente (`--no-fail-on-empty-changeset`).
+  `network → security → ecr → ecs-cluster → alb → backend-service` tras la **aprobación
+  manual** del Environment `production`. Idempotente (`--no-fail-on-empty-changeset`).
 
-> El stack `00-cicd-infra` **no lo gestiona el CI** (define el propio `InfraDeployRole` que
-> el CI asume): se valida en cada PR pero solo se despliega **a mano por la consola**.
+> El stack `bootstrap` (`dev-assistant-cicd-infra`) **no lo gestiona el CI** (define los
+> propios roles `InfraDeployRole`/`DeployRole` que el CI asume): se valida en cada PR pero
+> solo se despliega **a mano por la consola**.
 
 > La imagen se mantiene en `:latest` (constante), así que redeployar la infra **no
 > revierte** la imagen: el rollout real por SHA lo maneja el workflow del backend. El CI
@@ -216,11 +227,12 @@ Hoy el ALB expone **HTTP:80**. Para servir la API por **HTTPS** en un dominio pr
 1. **Certificado ACM** en us-east-1 para el dominio (validación por DNS). Si gestionas el
    dominio en **Route53**, la validación es automática; si no, añade el CNAME de
    validación en tu DNS.
-2. En [`templates/03-service.yaml`](templates/03-service.yaml): **descomenta** el bloque
+2. En [`templates/infra/alb.yml`](templates/infra/alb.yml): **descomenta** el bloque
    `HttpsListener` (443, con el `CertificateArn`) y cambia el `HttpListener` (80) de
    `forward` a **redirect 80 → 443** (el bloque ya está como comentario).
-3. El Security Group del ALB **ya tiene abierto el 443** (reservado en `01-network.yaml`).
-4. Pon el dominio real en `params/03-service.json` (`DomainName`) y despliega por PR.
+3. El Security Group del ALB **ya tiene abierto el 443** (reservado en
+   `templates/infra/security.yml`).
+4. Pon el dominio real en `params/alb.json` (`DomainName`) y despliega por PR.
 5. **Apunta el dominio al ALB**: crea un registro **alias A** de `api.tudominio.com` → el
    `AlbDnsName` del output del stack `service` (en Route53, o un CNAME equivalente en tu
    DNS).
@@ -245,10 +257,11 @@ tarea pública directa (se pierde el WS gestionado).
 
 ## Verificación end-to-end
 
-1. **Stacks OK**: en la consola de **CloudFormation**, los stacks `network`,
-   `cicd-backend` y `service` en `CREATE_COMPLETE` / `UPDATE_COMPLETE`.
+1. **Stacks OK**: en la consola de **CloudFormation**, los stacks `network`, `security`,
+   `ecr`, `ecs-cluster`, `alb` y `backend-service` en `CREATE_COMPLETE` /
+   `UPDATE_COMPLETE`.
 2. **Salud**: `curl http://<AlbDnsName>/health` → `{"status":"ok"}` (valida ALB + tarea
-   sana). Usa el output `AlbDnsName` del stack `service`.
+   sana). Usa el output `AlbDnsName` del stack `alb`.
 3. **Logs**: CloudWatch → `/ecs/dev-assistant-backend`. Debe verse que las **migraciones
    se aplicaron** y luego `DevAssistant API escuchando...` sin errores de TypeORM.
 4. **App**: probar registro/login (JWT) y el chat (incluida la conexión WebSocket).
@@ -266,7 +279,7 @@ tarea pública directa (se pierde el WS gestionado).
 - **Para borrar todo**: elimina **primero a mano** el RDS y su red propia (la instancia
   `dev-assistant-postgres` —con snapshot final si quieres conservar los datos—, luego el DB
   subnet group `dev-assistant-db-subnets` y el security group `dev-assistant-rds-sg`).
-  Después borra los stacks en orden inverso (`service → cicd-backend → network →
-  cicd-infra`). Borra `cicd-infra` **al final**: `cicd-backend` importa su export
-  `OidcProviderArn` y CloudFormation no permite eliminar un stack mientras otro consume su
-  export.
+  Después borra los stacks en orden inverso (`backend-service → alb → ecs-cluster → ecr →
+  security → network → cicd-infra`). El stack `cicd-infra` (bootstrap) se puede borrar en
+  cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo template ya
+  no queda ningún `Fn::ImportValue` de otro stack hacia su export `OidcProviderArn`.

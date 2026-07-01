@@ -1,5 +1,0 @@
-[
-  { "ParameterKey": "ProjectName", "ParameterValue": "dev-assistant" },
-  { "ParameterKey": "InfraGitHubRepo", "ParameterValue": "dev-assistant-infra" },
-  { "ParameterKey": "GitHubOrg", "ParameterValue": "valerianomacuri" }
-]

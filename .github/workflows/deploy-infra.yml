@@ -3,12 +3,13 @@ name: Deploy infra
 # CI/CD de la infraestructura (CloudFormation).
 #   - En cada PR: lint (cfn-lint) + seguridad (checkov) + validate-template, y un
 #     "plan" que crea change sets para previsualizar el diff (sin cambiar nada).
-#   - En push a main: despliega network -> cicd-backend -> service, tras la
-#     aprobación manual del Environment `production`.
-# El stack de bootstrap 00-cicd-infra (OIDC + InfraDeployRole) NO lo gestiona el CI:
-# define el propio rol que aquí se asume, así que se despliega a mano.
+#   - En push a main: despliega network -> security -> ecr -> ecs-cluster -> alb
+#     -> backend-service, tras la aprobación manual del Environment `production`.
+# El stack de bootstrap (OIDC + InfraDeployRole + DeployRole, templates/bootstrap/
+# github-oidc.yml) NO lo gestiona el CI: define los propios roles que aquí se
+# asumen, así que se despliega a mano.
 # Autenticación con AWS vía GitHub OIDC (sin llaves estáticas): el rol a asumir
-# (InfraDeployRole) lo crea el stack `00-cicd-infra.yaml`.
+# (InfraDeployRole) lo crea el stack `bootstrap`.
 
 on:
   pull_request:
@@ -74,7 +75,7 @@ jobs:
           {
             echo "## Plan de infraestructura (change sets)"
             echo ""
-            for slug in 01-network 02-cicd-backend 03-service; do
+            for slug in network security ecr ecs-cluster alb backend-service; do
               bash scripts/cfn.sh changeset "$slug"
             done
           } | tee plan.md >> "$GITHUB_STEP_SUMMARY"
@@ -100,11 +101,19 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # cicd-backend importa el OIDC que exporta el bootstrap 00-cicd-infra (ya
-      # desplegado a mano). El CI no toca 00-cicd-infra.
+      # El bootstrap (OIDC + InfraDeployRole + DeployRole) ya está desplegado a
+      # mano. El CI no lo toca. Orden: network y security antes que alb (alb
+      # importa el SG y las subredes); ecs-cluster y alb antes que
+      # backend-service (importa el cluster y el target group).
       - name: Deploy network
-        run: bash scripts/cfn.sh deploy 01-network
-      - name: Deploy cicd-backend
-        run: bash scripts/cfn.sh deploy 02-cicd-backend
-      - name: Deploy service
-        run: bash scripts/cfn.sh deploy 03-service
+        run: bash scripts/cfn.sh deploy network
+      - name: Deploy security
+        run: bash scripts/cfn.sh deploy security
+      - name: Deploy ecr
+        run: bash scripts/cfn.sh deploy ecr
+      - name: Deploy ecs-cluster
+        run: bash scripts/cfn.sh deploy ecs-cluster
+      - name: Deploy alb
+        run: bash scripts/cfn.sh deploy alb
+      - name: Deploy backend-service
+        run: bash scripts/cfn.sh deploy backend-service

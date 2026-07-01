@@ -1,13 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant - INFRA CI/CD (bootstrap). GitHub OIDC provider (one per account)
-  and the role that the infra repo's GitHub Actions assumes (no static keys) to
-  validate and deploy the CloudFormation stacks. This is a bootstrap stack: it is
-  deployed MANUALLY once because it defines the very role the CI uses; the CI does
-  not manage itself.
-  dev-assistant-backend - backend CI/CD: ECR for the image and an IAM role
-  assumed by GitHub Actions via OIDC to push and deploy to ECS. The OIDC provider
-  is created by the 00-cicd-infra bootstrap.
+  dev-assistant - INFRA + BACKEND CI/CD (bootstrap). GitHub OIDC provider (one
+  per account), the InfraDeployRole that the infra repo's GitHub Actions assumes
+  (no static keys) to validate and deploy the CloudFormation stacks, and the
+  DeployRole that the backend repo's GitHub Actions assumes to push images to
+  ECR and deploy to ECS. This is a bootstrap stack: it is deployed MANUALLY once
+  because it defines the very role the infra CI uses to deploy everything else;
+  the CI does not manage itself, so updates to either role also go by hand.
 
 
 Parameters:
@@ -42,10 +41,11 @@ Resources:
         - sts.amazonaws.com
 
   # Role assumed by the INFRA repo's GitHub Actions to deploy the CloudFormation
-  # stacks (network/cicd-backend/service). It is necessarily powerful: it manages
-  # networking, ALB, ECS, ACM, logs, ECR and named IAM roles. It is scoped by
-  # Resource to the project prefix where the service allows it; services whose ARN
-  # does not support a useful pattern (ec2, elb, acm) stay on "*".
+  # stacks (network/security/ecr/ecs-cluster/alb/backend-service). It is
+  # necessarily powerful: it manages networking, ALB, ECS, ACM, logs, ECR and
+  # named IAM roles. It is scoped by Resource to the project prefix where the
+  # service allows it; services whose ARN does not support a useful pattern
+  # (ec2, elb, acm) stay on "*".
   InfraDeployRole:
     Type: AWS::IAM::Role
     Properties:

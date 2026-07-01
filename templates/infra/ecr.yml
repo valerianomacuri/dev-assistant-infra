@@ -1,13 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant - INFRA CI/CD (bootstrap). GitHub OIDC provider (one per account)
-  and the role that the infra repo's GitHub Actions assumes (no static keys) to
-  validate and deploy the CloudFormation stacks. This is a bootstrap stack: it is
-  deployed MANUALLY once because it defines the very role the CI uses; the CI does
-  not manage itself.
-  dev-assistant-backend - backend CI/CD: ECR for the image and an IAM role
-  assumed by GitHub Actions via OIDC to push and deploy to ECS. The OIDC provider
-  is created by the 00-cicd-infra bootstrap.
+  dev-assistant-backend - ECR repository for the backend Docker image, with
+  vulnerability scan-on-push and a lifecycle policy that keeps only the last
+  10 images. Tags are mutable: the backend CI/CD reuses `:latest` on purpose
+  for this MVP.
 
 Parameters:
   EcrRepositoryName:

@@ -1,6 +1,6 @@
 [
   { "ParameterKey": "ProjectName", "ParameterValue": "dev-assistant" },
-  { "ParameterKey": "EcrRepositoryName", "ParameterValue": "dev-assistant-backend" },
+  { "ParameterKey": "InfraGitHubRepo", "ParameterValue": "dev-assistant-infra" },
   { "ParameterKey": "GitHubRepo", "ParameterValue": "dev-assistant-backend" },
   { "ParameterKey": "GitHubOrg", "ParameterValue": "valerianomacuri" }
 ]
