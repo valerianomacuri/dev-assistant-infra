@@ -33,10 +33,13 @@ Parameters:
     Description: Memory in MB.
   DesiredCount:
     Type: Number
-    Default: 0
+    Default: 1
     Description: >
-      Starts at 0 on purpose: there is no image in ECR until the backend repo's
-      CI/CD pushes the first one. The backend CI/CD then activates the task(s).
+      Starts at 1 from the very first deploy: the placeholder image pushed to
+      ECR during bootstrap (see scripts/push-placeholder.sh) means a real image
+      already exists at deploy time. Kept at 1, not higher: the container runs
+      migrationsRun: true (TypeORM) on boot, and concurrent tasks would race to
+      apply the same migrations (see dev-assistant-backend/docs/deployment.md).
   CorsOrigins:
     Type: String
     Default: "*"

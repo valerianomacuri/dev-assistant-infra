@@ -13,9 +13,9 @@
 #                                       <slug> es "rds", el borrado deja un
 #                                       snapshot final (DeletionPolicy: Snapshot
 #                                       en templates/infra/rds.yml).
-#   scripts/cfn.sh destroy-all          Borra los 8 stacks CI-managed en orden
+#   scripts/cfn.sh destroy-all          Borra los 7 stacks CI-managed en orden
 #                                       inverso al de deploy-infra.yml. No
-#                                       toca "bootstrap" (manual).
+#                                       toca "bootstrap" ni "ecr" (manuales).
 #   scripts/cfn.sh set-database-url     Arma DATABASE_URL con el output
 #                                       RdsEndpointAddress del stack rds y la
 #                                       env var RDS_MASTER_PASSWORD, y lo
@@ -28,12 +28,15 @@
 # archivo: los templates viven repartidos en templates/{bootstrap,infra,app}/
 # con extensión .yaml o .yml según el archivo). Ver template_path().
 #
-#   bootstrap  (bootstrap MANUAL: OIDC + InfraDeployRole + DeployRole; el CI no
-#              lo despliega, solo lo valida)
-#   network | security | rds | ecr | ecs-cluster | alb | observability | backend-service
+#   bootstrap | ecr
+#              (MANUAL: OIDC + InfraDeployRole + DeployRole, y el repositorio
+#              ECR con el placeholder -ver scripts/push-placeholder.sh-; el CI
+#              no los despliega, solo los valida)
+#   network | security | rds | ecs-cluster | alb | observability | backend-service
 #              (los gestiona el CI, en ese orden: network y security antes de
 #              rds -que importa su VPC/subredes y su Security Group- y antes de
-#              alb; ecs-cluster y alb antes de observability y backend-service)
+#              alb; ecs-cluster y alb antes de observability y backend-service,
+#              que importa el repo ecr creado a mano en el bootstrap)
 #
 # Los params ESTÁTICOS van en params/*.json. Variables: AWS_REGION (def.
 # us-east-1), PROJECT_NAME (def. dev-assistant). El slug "rds" además necesita
@@ -44,16 +47,16 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT="${PROJECT_NAME:-dev-assistant}"
-SLUGS=(bootstrap network security rds ecr ecs-cluster alb observability backend-service)
+SLUGS=(bootstrap ecr network security rds ecs-cluster alb observability backend-service)
 
 # Mapea slug -> ruta real del template.
 template_path() {
   case "$1" in
     bootstrap)       echo "templates/bootstrap/github-oidc.yml" ;;
+    ecr)             echo "templates/bootstrap/ecr.yml" ;;
     network)         echo "templates/infra/network.yaml" ;;
     security)        echo "templates/infra/security.yml" ;;
     rds)              echo "templates/infra/rds.yml" ;;
-    ecr)             echo "templates/infra/ecr.yml" ;;
     ecs-cluster)      echo "templates/infra/ecs-cluster.yml" ;;
     alb)              echo "templates/infra/alb.yml" ;;
     observability)    echo "templates/infra/observability.yml" ;;
@@ -66,10 +69,10 @@ template_path() {
 stack_name() {
   case "$1" in
     bootstrap)       echo "${PROJECT}-cicd-infra" ;;
+    ecr)             echo "${PROJECT}-ecr" ;;
     network)         echo "${PROJECT}-network" ;;
     security)        echo "${PROJECT}-security" ;;
     rds)              echo "${PROJECT}-rds" ;;
-    ecr)             echo "${PROJECT}-ecr" ;;
     ecs-cluster)      echo "${PROJECT}-ecs-cluster" ;;
     alb)              echo "${PROJECT}-alb" ;;
     observability)    echo "${PROJECT}-observability" ;;
@@ -211,6 +214,7 @@ destroy_all() {
   for (( i=${#SLUGS[@]}-1; i>=0; i-- )); do
     slug="${SLUGS[$i]}"
     [ "$slug" = "bootstrap" ] && continue
+    [ "$slug" = "ecr" ] && continue
     destroy "$slug"
   done
 }

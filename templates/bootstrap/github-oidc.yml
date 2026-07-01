@@ -41,11 +41,12 @@ Resources:
         - sts.amazonaws.com
 
   # Role assumed by the INFRA repo's GitHub Actions to deploy the CloudFormation
-  # stacks (network/security/ecr/ecs-cluster/alb/backend-service). It is
-  # necessarily powerful: it manages networking, ALB, ECS, ACM, logs, ECR and
+  # stacks (network/security/rds/ecs-cluster/alb/observability/backend-service).
+  # It is necessarily powerful: it manages networking, ALB, ECS, ACM, logs and
   # named IAM roles. It is scoped by Resource to the project prefix where the
   # service allows it; services whose ARN does not support a useful pattern
-  # (ec2, elb, acm) stay on "*".
+  # (ec2, elb, acm) stay on "*". ECR is out of scope: templates/bootstrap/ecr.yml
+  # is deployed manually, not by this role.
   InfraDeployRole:
     Type: AWS::IAM::Role
     Properties:
@@ -92,7 +93,8 @@ Resources:
             Statement:
               # Resources of the stacks managed by the CI. ec2/elb/acm do not
               # support a useful ARN pattern for these create/describe actions, so
-              # they stay on "*".
+              # they stay on "*". ECR is NOT here: that stack moved to bootstrap
+              # (templates/bootstrap/ecr.yml, manual) so the CI no longer manages it.
               - Effect: Allow
                 Action:
                   - ec2:*
@@ -109,13 +111,6 @@ Resources:
                   - logs:DescribeLogGroups
                   - logs:TagResource
                   - logs:ListTagsForResource
-                  - ecr:CreateRepository
-                  - ecr:DeleteRepository
-                  - ecr:DescribeRepositories
-                  - ecr:PutLifecyclePolicy
-                  - ecr:GetLifecyclePolicy
-                  - ecr:SetRepositoryPolicy
-                  - ecr:TagResource
                   - ssm:GetParameters
                   - ssm:GetParameter
                 Resource: "*"

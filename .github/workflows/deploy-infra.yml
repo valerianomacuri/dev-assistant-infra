@@ -3,12 +3,13 @@ name: Deploy infra
 # CI/CD de la infraestructura (CloudFormation).
 #   - En cada PR: lint (cfn-lint) + seguridad (checkov) + validate-template, y un
 #     "plan" que crea change sets para previsualizar el diff (sin cambiar nada).
-#   - En push a main: despliega network -> security -> rds -> ecr -> ecs-cluster
-#     -> alb -> observability -> backend-service, tras la aprobación manual del
+#   - En push a main: despliega network -> security -> rds -> ecs-cluster -> alb
+#     -> observability -> backend-service, tras la aprobación manual del
 #     Environment `production`.
-# El stack de bootstrap (OIDC + InfraDeployRole + DeployRole, templates/bootstrap/
-# github-oidc.yml) NO lo gestiona el CI: define los propios roles que aquí se
-# asumen, así que se despliega a mano.
+# Los stacks bootstrap (OIDC + InfraDeployRole + DeployRole) y ecr (repositorio +
+# placeholder, ver scripts/push-placeholder.sh) NO los gestiona el CI: bootstrap
+# define los propios roles que aquí se asumen, y ecr necesita existir con una
+# imagen antes de que corra cualquier CI, así que ambos se despliegan a mano.
 # Autenticación con AWS vía GitHub OIDC (sin llaves estáticas): el rol a asumir
 # (InfraDeployRole) lo crea el stack `bootstrap`.
 # El stack `rds` necesita además el secret RDS_MASTER_PASSWORD (password
@@ -85,7 +86,7 @@ jobs:
           {
             echo "## Plan de infraestructura (change sets)"
             echo ""
-            for slug in network security rds ecr ecs-cluster alb observability backend-service; do
+            for slug in network security rds ecs-cluster alb observability backend-service; do
               bash scripts/cfn.sh changeset "$slug"
             done
           } | tee plan.md >> "$GITHUB_STEP_SUMMARY"
@@ -111,13 +112,13 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # El bootstrap (OIDC + InfraDeployRole + DeployRole) ya está desplegado a
-      # mano. El CI no lo toca. Orden: network y security antes que rds (rds
-      # importa las subredes privadas y el SG) y que alb (alb importa el SG y
-      # las subredes públicas); ecs-cluster y alb antes que observability
-      # (importa ClusterName, BackendLogGroupName, LoadBalancerFullName y
-      # TargetGroupFullName) y backend-service (importa el cluster y el target
-      # group).
+      # El bootstrap (OIDC + InfraDeployRole + DeployRole) y el ecr (repo +
+      # placeholder) ya están desplegados a mano. El CI no los toca. Orden:
+      # network y security antes que rds (rds importa las subredes privadas y
+      # el SG) y que alb (alb importa el SG y las subredes públicas); ecs-cluster
+      # y alb antes que observability (importa ClusterName, BackendLogGroupName,
+      # LoadBalancerFullName y TargetGroupFullName) y backend-service (importa
+      # el cluster, el target group y el repo ecr creado a mano).
       - name: Deploy network
         run: bash scripts/cfn.sh deploy network
       - name: Deploy security
@@ -130,8 +131,6 @@ jobs:
         env:
           RDS_MASTER_PASSWORD: ${{ secrets.RDS_MASTER_PASSWORD }}
         run: bash scripts/cfn.sh set-database-url
-      - name: Deploy ecr
-        run: bash scripts/cfn.sh deploy ecr
       - name: Deploy ecs-cluster
         run: bash scripts/cfn.sh deploy ecs-cluster
       - name: Deploy alb

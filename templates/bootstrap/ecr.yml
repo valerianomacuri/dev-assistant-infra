@@ -3,7 +3,10 @@ Description: >
   dev-assistant-backend - ECR repository for the backend Docker image, with
   vulnerability scan-on-push and a lifecycle policy that keeps only the last
   10 images. Tags are mutable: the backend CI/CD reuses `:latest` on purpose
-  for this MVP.
+  for this MVP. This is a bootstrap stack: it is deployed MANUALLY, before the
+  infra CI ever runs, so a placeholder image can be pushed to it first (see
+  scripts/push-placeholder.sh) and backend-service can start with
+  DesiredCount > 0 from its very first deploy.
 
 Parameters:
   EcrRepositoryName:

@@ -33,19 +33,23 @@ Internet ──HTTP:80──> ALB (público) ──HTTP:3000──> ECS Fargate 
 
 ## Stacks (9 capas)
 
-Se enlazan con `Export` / `ImportValue`. El único stack manual es `bootstrap`
-(`templates/bootstrap/github-oidc.yml`): crea el proveedor OIDC de GitHub y **los dos
-roles** que asumen el CI de infra y el CI del backend (ya no están en stacks
-separados). Los otros 8 los gestiona el CI, en este orden de dependencias:
-`network → security → rds → ecr → ecs-cluster → alb → observability → backend-service`.
+Se enlazan con `Export` / `ImportValue`. Hay dos stacks manuales: `bootstrap`
+(`templates/bootstrap/github-oidc.yml`), que crea el proveedor OIDC de GitHub y **los dos
+roles** que asumen el CI de infra y el CI del backend (ya no están en stacks separados), y
+`ecr` (`templates/bootstrap/ecr.yml`), que crea el repositorio antes de que corra
+cualquier CI para poder subirle una imagen **placeholder** (ver
+[Puesta en marcha](#puesta-en-marcha-una-sola-vez)) y así arrancar `backend-service` con
+tareas activas desde su primer deploy. Los otros 7 los gestiona el CI, en este orden de
+dependencias: `network → security → rds → ecs-cluster → alb → observability →
+backend-service`.
 
 | Plantilla | Stack | Despliega | Qué crea |
 |-----------|-------|-----------|----------|
 | `templates/bootstrap/github-oidc.yml` | `dev-assistant-cicd-infra` | **Manual (consola)** | Proveedor **OIDC** de GitHub (único por cuenta), el **`InfraDeployRole`** que asume el CI de infra y el **`DeployRole`** que asume el CI del backend. |
+| `templates/bootstrap/ecr.yml` | `dev-assistant-ecr` | **Manual (consola/CLI)** | Repositorio **ECR** de la imagen del backend, con la imagen **placeholder** subida a mano (`scripts/push-placeholder.sh`) antes del primer deploy de `backend-service`. |
 | `templates/infra/network.yaml` | `dev-assistant-network` | CI | VPC `10.20.0.0/16`, 2 subredes públicas (ALB/Fargate, 2 AZ) + 2 subredes privadas (RDS, sin ruta a Internet), Internet Gateway y rutas. Exporta `VpcId`, `PublicSubnet1/2`, `PrivateSubnet1/2`. |
 | `templates/infra/security.yml` | `dev-assistant-security` | CI | Security Groups `alb-sg`, `app-sg` y `rds-sg`. Importa `VpcId`. Exporta `AlbSecurityGroupId`, `AppSecurityGroupId`, `RdsSecurityGroupId`. |
 | `templates/infra/rds.yml` | `dev-assistant-rds` | CI | **RDS PostgreSQL 16**, Single-AZ, en las subredes privadas (importa `PrivateSubnet1/2` y `RdsSecurityGroupId`). Password maestra self-managed inyectada por `RDS_MASTER_PASSWORD` (secret de GitHub). La instancia tiene `DeletionPolicy`/`UpdateReplacePolicy: Snapshot`. Exporta `RdsEndpointAddress`, `RdsEndpointPort`. |
-| `templates/infra/ecr.yml` | `dev-assistant-ecr` | CI | Repositorio **ECR** de la imagen del backend. |
 | `templates/infra/ecs-cluster.yml` | `dev-assistant-ecs-cluster` | CI | **Cluster ECS**, log group de CloudWatch y el rol de ejecución de la tarea. Exporta `ClusterName`, `BackendLogGroupName`, `ExecutionRoleArn`. |
 | `templates/infra/alb.yml` | `dev-assistant-alb` | CI | **ALB** (HTTP + WS) y su Target Group. Importa `AlbSecurityGroupId`, `PublicSubnet1/2`, `VpcId`. Exporta `AlbDnsName`, `TargetGroupArn`, `LoadBalancerFullName`, `TargetGroupFullName`. |
 | `templates/infra/observability.yml` | `dev-assistant-observability` | CI | **Tópico SNS** de alarmas (con suscripción por email opcional), **alarmas CloudWatch** de CPU/memoria del servicio ECS, hosts no saludables/5XX/latencia del ALB y errores en el log del backend, y un **dashboard** único. Importa `ClusterName`, `BackendLogGroupName`, `LoadBalancerFullName`, `TargetGroupFullName`. Exporta `AlarmTopicArn`. |
@@ -60,6 +64,13 @@ separados). Los otros 8 los gestiona el CI, en este orden de dependencias:
   propios roles que usa el CI — incluidos cambios futuros a `DeployRole`, que también van
   a mano. El proveedor OIDC es **único por cuenta**: este stack asume que la cuenta aún no
   tiene uno de GitHub.
+- **ecr** (manual): repositorio ECR de la imagen del backend, tags mutables (reusa
+  `:latest` a propósito). Se despliega **a mano** igual que `bootstrap`, antes de que corra
+  cualquier CI, para poder subirle la imagen **placeholder** con `scripts/push-placeholder.sh`
+  (ver [Puesta en marcha](#puesta-en-marcha-una-sola-vez)) — así `backend-service` arranca
+  con una tarea corriendo desde su primer deploy, sin depender de que el CI del backend
+  haya corrido antes. `InfraDeployRole` (stack `bootstrap`) no tiene permisos `ecr:Create*`
+  ni `ecr:Delete*`: no gestiona este stack.
 - **network**: la decisión de costo está aquí — Fargate vive en subredes **públicas**
   (`MapPublicIpOnLaunch`) y sale a Internet por el IGW, evitando el NAT Gateway. Las 2
   subredes **privadas** (sin ruta al Internet Gateway) son solo para RDS: no necesitan
@@ -82,16 +93,17 @@ separados). Los otros 8 los gestiona el CI, en este orden de dependencias:
 - **ecs-cluster** / **alb** / **backend-service**: la tarea corre con
   `assignPublicIp: ENABLED`, `enableExecuteCommand: true` (depuración con ECS Exec) y
   _circuit breaker_ con rollback. Lee los 4 secretos desde SSM `/dev-assistant/*`.
-  **`DesiredCount` arranca en 0** a propósito: no hay imagen en ECR hasta que el CI/CD del
-  backend publica la primera, y es ese CI/CD el que activa las tareas.
+  **`DesiredCount` arranca en 1** desde el primer deploy, gracias a la imagen placeholder
+  subida a mano al stack `ecr`. No sube de 1: el contenedor corre `migrationsRun: true`
+  (TypeORM) al boot, y tareas concurrentes se pisarían al aplicar las mismas migraciones
+  (ver `dev-assistant-backend/docs/deployment.md`).
 - **observability**: cubre ECS + ALB + logs; **RDS queda fuera** de las alarmas/dashboard
   en esta fase (no tiene métricas propias configuradas todavía, aunque ya es un stack de
   CloudFormation). El parámetro
   `AlarmEmail` (en `params/observability.json`) está vacío por defecto — sin él no se crea
   la suscripción SNS y las alarmas no notifican a nadie. Al completarlo y desplegar, AWS
   manda un mail de confirmación al endpoint que **hay que confirmar a mano** (si no, SNS
-  descarta las notificaciones). Con `DesiredCount: 0` es normal ver los widgets de ECS del
-  dashboard sin datos hasta que el backend activa la primera tarea.
+  descarta las notificaciones).
 
 ## Configuración (parámetros)
 
@@ -126,38 +138,50 @@ cuenta/entorno viven en `params/*.json`.
    > template) antes del paso 3: `InfraDeployRole` ahora también necesita los permisos
    > `rds:*` y `ssm:PutParameter` que usan el stack `rds` y `set-database-url`.
 
-2. **Configura este repositorio en GitHub** (Settings → Secrets and variables → Actions):
+2. **Bootstrap del repositorio ECR y su placeholder (consola/CLI).** Con las mismas
+   credenciales admin: despliega `templates/bootstrap/ecr.yml` (stack
+   `dev-assistant-ecr`, sin capacidades especiales) — por consola igual que el paso 1, o
+   con `bash scripts/cfn.sh deploy ecr` si ya tenés AWS CLI configurado. Después corré
+   `bash scripts/push-placeholder.sh`: construye y sube a ese repo, como tag `:latest`,
+   una imagen mínima (`placeholder/`) que responde `200 {"status":"ok"}` en `GET /health`.
+   Esto deja `backend-service` listo para arrancar con `DesiredCount: 1` desde su primer
+   deploy (paso 4), sin depender de que el CI del backend haya corrido antes. El primer
+   push real de ese CI sobreescribe el mismo tag `:latest`.
+
+3. **Configura este repositorio en GitHub** (Settings → Secrets and variables → Actions):
    - **Secret** `AWS_DEPLOY_ROLE_ARN` = `InfraDeployRoleArn` del paso 1.
    - **Secret** `RDS_MASTER_PASSWORD` = una contraseña fuerte que elijas vos (nunca va en
      `params/*.json` ni en git). El stack `rds` la usa como password maestra self-managed
      de la instancia, y el CI la reusa para componer `DATABASE_URL` automáticamente
-     (ver paso 3).
+     (ver paso 4).
    - **Variables**: `AWS_REGION` = `us-east-1`, `PROJECT_NAME` = `dev-assistant`.
    - En **Settings → Environments** crea `production` y añade _Required reviewers_ (gate de
      aprobación antes de cada deploy).
 
-3. **Sube el repo y deja que el CI despliegue.** Con la rama `main` en GitHub, el push
+4. **Sube el repo y deja que el CI despliegue.** Con la rama `main` en GitHub, el push
    dispara el workflow: tras la aprobación del Environment `production`, despliega
-   `network → security → rds → ecr → ecs-cluster → alb → observability →
-   backend-service`. Justo después de `rds`, el paso **"Set DATABASE_URL in SSM"** arma la
-   connection string con el output `RdsEndpointAddress` + `RDS_MASTER_PASSWORD` y la
-   publica en `/dev-assistant/DATABASE_URL` — sin pasos manuales. El servicio ECS queda con
-   **0 tareas** (aún sin imagen). Si querés recibir alarmas por email, completá
-   `AlarmEmail` en `params/observability.json` antes de este paso (o después, con un
-   redeploy del stack `observability`) y confirmá el mail que manda SNS.
+   `network → security → rds → ecs-cluster → alb → observability → backend-service`.
+   Justo después de `rds`, el paso **"Set DATABASE_URL in SSM"** arma la connection string
+   con el output `RdsEndpointAddress` + `RDS_MASTER_PASSWORD` y la publica en
+   `/dev-assistant/DATABASE_URL` — sin pasos manuales. El servicio ECS queda con **1 tarea
+   corriendo la imagen placeholder** del paso 2 (`DesiredCount: 1`), sana detrás del ALB. Si
+   querés recibir alarmas por email, completá `AlarmEmail` en `params/observability.json`
+   antes de este paso (o después, con un redeploy del stack `observability`) y confirmá el
+   mail que manda SNS.
 
-4. **Crea los 3 secretos restantes en SSM por consola** (ver
+5. **Crea los 3 secretos restantes en SSM por consola** (ver
    [Secretos en SSM](#paso-por-consola--secretos-en-ssm-parameter-store)): `DATABASE_URL`
-   ya lo dejó el CI en el paso 3.
+   ya lo dejó el CI en el paso 4.
 
-5. **Configura el repositorio del backend en GitHub** (ver
+6. **Configura el repositorio del backend en GitHub** (ver
    [Variables y secretos del backend](#variables-y-secretos-de-github-backend)) con el
    output `DeployRoleArn` del paso 1 y los outputs de los stacks `ecs-cluster` y
    `backend-service`.
 
-6. **Primer despliegue del backend.** El CI/CD del backend construye la imagen, la publica
-   en ECR y **activa la tarea** del servicio. A partir de aquí la API responde por
-   `http://<AlbDnsName>` (output del stack `service`).
+7. **Primer despliegue del backend.** El CI/CD del backend construye la imagen real, la
+   publica en ECR (reemplazando el placeholder en el mismo tag `:latest`) y actualiza la
+   tarea del servicio. A partir de aquí la API responde por `http://<AlbDnsName>` (output
+   del stack `service`).
 
 ## Paso por consola — Secretos en SSM Parameter Store
 
@@ -210,13 +234,15 @@ normal es por **Pull Request**.
   `validate-template`, y un **plan** que crea _change sets_ para previsualizar el diff de
   cada stack y lo publica como comentario del PR. **No cambia nada.**
 - **En push a `main`** (o `workflow_dispatch`): despliega en orden
-  `network → security → rds → ecr → ecs-cluster → alb → observability →
-  backend-service` tras la **aprobación manual** del Environment `production`.
-  Idempotente (`--no-fail-on-empty-changeset`).
+  `network → security → rds → ecs-cluster → alb → observability → backend-service`
+  tras la **aprobación manual** del Environment `production`. Idempotente
+  (`--no-fail-on-empty-changeset`).
 
-> El stack `bootstrap` (`dev-assistant-cicd-infra`) **no lo gestiona el CI** (define los
-> propios roles `InfraDeployRole`/`DeployRole` que el CI asume): se valida en cada PR pero
-> solo se despliega **a mano por la consola**.
+> Los stacks `bootstrap` (`dev-assistant-cicd-infra`) y `ecr` (`dev-assistant-ecr`) **no
+> los gestiona el CI**: `bootstrap` define los propios roles `InfraDeployRole`/`DeployRole`
+> que el CI asume, y `ecr` necesita existir con la imagen placeholder antes de que corra
+> cualquier CI (ver [Puesta en marcha](#puesta-en-marcha-una-sola-vez)). Ambos se validan
+> en cada PR pero solo se despliegan **a mano**.
 
 > La imagen se mantiene en `:latest` (constante), así que redeployar la infra **no
 > revierte** la imagen: el rollout real por SHA lo maneja el workflow del backend. El CI
@@ -264,8 +290,9 @@ Hoy el ALB expone **HTTP:80**. Para servir la API por **HTTPS** en un dominio pr
 | CloudWatch Alarms (6) + SNS + Dashboard | ~US$0.60 (dashboard gratis: primeros 3 por cuenta) |
 | **Total** | **~US$51–56** |
 
-> Con `DesiredCount: 0` y sin imagen, el costo de Fargate es **US$0** hasta que el CI/CD
-> del backend activa la tarea.
+> Con `DesiredCount: 1` la tarea de Fargate corre desde el primer deploy (imagen
+> placeholder o real), así que ese costo aplica desde el paso 4 de
+> [Puesta en marcha](#puesta-en-marcha-una-sola-vez), no desde el primer push del backend.
 
 > Al borrar o reemplazar el `DBInstance` (stack `rds`), `DeletionPolicy`/
 > `UpdateReplacePolicy: Snapshot` deja un **snapshot final** en AWS (~US$0.095/GB-mes, unos
@@ -278,9 +305,9 @@ tarea pública directa (se pierde el WS gestionado).
 
 ## Verificación end-to-end
 
-1. **Stacks OK**: en la consola de **CloudFormation**, los stacks `network`, `security`,
-   `rds`, `ecr`, `ecs-cluster`, `alb`, `observability` y `backend-service` en
-   `CREATE_COMPLETE` / `UPDATE_COMPLETE`.
+1. **Stacks OK**: en la consola de **CloudFormation**, los stacks `bootstrap`, `ecr`,
+   `network`, `security`, `rds`, `ecs-cluster`, `alb`, `observability` y `backend-service`
+   en `CREATE_COMPLETE` / `UPDATE_COMPLETE`.
 2. **Salud**: `curl http://<AlbDnsName>/health` → `{"status":"ok"}` (valida ALB + tarea
    sana). Usa el output `AlbDnsName` del stack `alb`.
 3. **Logs**: CloudWatch → `/ecs/dev-assistant-backend`. Debe verse que las **migraciones
@@ -290,8 +317,7 @@ tarea pública directa (se pierde el WS gestionado).
    servicio `stable` con la nueva imagen.
 6. **Observability**: abrí el output `DashboardUrl` del stack `observability` y confirmá
    que los widgets de ALB (requests, hosts saludables) muestran datos. Las alarmas deberían
-   estar en `OK` (o `INSUFFICIENT_DATA` si el servicio sigue en `DesiredCount: 0`), visibles
-   en CloudWatch → Alarms con el prefijo `dev-assistant-`.
+   estar en `OK`, visibles en CloudWatch → Alarms con el prefijo `dev-assistant-`.
 
 > La subida de documentos (S3), la ingesta asíncrona (SQS) y el PDF de stats (Lambda) están
 > **fuera de esta fase**: el Task Role aún no tiene esos permisos.
@@ -303,16 +329,16 @@ tarea pública directa (se pierde el WS gestionado).
   RDS.
 - **Para borrar todo**: corré `bash scripts/cfn.sh destroy-all` (`destroy` usa
   `delete-stack`, que no necesita parámetros, así que no hace falta `RDS_MASTER_PASSWORD`
-  para borrar). Borra los 8 stacks CI-managed en orden inverso al de despliegue
-  (`backend-service →
-  observability → alb → ecs-cluster → ecr → rds → security → network`), vaciando antes
-  el repo ECR (si no, `delete-stack` falla con "repository not empty") y esperando a que
-  cada borrado termine antes de seguir con el siguiente. Al borrar el stack `rds`,
-  `DeletionPolicy: Snapshot` deja un **snapshot final** de la instancia — si no querés
-  seguir pagando su almacenamiento, borralo a mano después desde **RDS → Snapshots**. No
-  toca `cicd-infra` (bootstrap) a propósito, para no invalidar el rol OIDC mientras el CI
-  todavía lo necesita. Ese stack se borra aparte, a mano
-  (`aws cloudformation delete-stack --stack-name dev-assistant-cicd-infra`), y podés
+  para borrar). Borra los 7 stacks CI-managed en orden inverso al de despliegue
+  (`backend-service → observability → alb → ecs-cluster → rds → security → network`),
+  esperando a que cada borrado termine antes de seguir con el siguiente. Al borrar el stack
+  `rds`, `DeletionPolicy: Snapshot` deja un **snapshot final** de la instancia — si no
+  querés seguir pagando su almacenamiento, borralo a mano después desde
+  **RDS → Snapshots**. No toca `cicd-infra` (bootstrap) **ni** `ecr` a propósito: el
+  primero para no invalidar el rol OIDC mientras el CI todavía lo necesita, y el segundo
+  porque es manual (`bash scripts/cfn.sh destroy ecr` vacía el repo primero — si no,
+  `delete-stack` falla con "repository not empty"). El stack `bootstrap` se borra aparte, a
+  mano (`aws cloudformation delete-stack --stack-name dev-assistant-cicd-infra`), y podés
   hacerlo en cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo
   template ya no queda ningún `Fn::ImportValue` de otro stack hacia su export
   `OidcProviderArn`.
