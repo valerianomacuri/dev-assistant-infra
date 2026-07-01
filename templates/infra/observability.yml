@@ -47,7 +47,7 @@ Parameters:
   ErrorLogAlarmThreshold:
     Type: Number
     Default: 5
-    Description: Backend log lines matching "ERROR" (sum) in 5min.
+    Description: Backend log lines matching { $.level = "error" } (sum) in 5min.
 
 Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
