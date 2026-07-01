@@ -151,17 +151,23 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  # CloudWatch Dashboard
+
+                  # Dashboards
                   - cloudwatch:PutDashboard
                   - cloudwatch:DeleteDashboards
                   - cloudwatch:GetDashboard
 
-                  # CloudWatch Logs Metric Filters
+                  # Alarms
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+
+                  # Logs Metric Filters
                   - logs:PutMetricFilter
                   - logs:DeleteMetricFilter
                   - logs:DescribeMetricFilters
 
-                  # SNS alarms topic
+                  # SNS
                   - sns:CreateTopic
                   - sns:GetTopicAttributes
                   - sns:SetTopicAttributes
