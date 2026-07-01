@@ -5,6 +5,14 @@
 #   scripts/cfn.sh changeset <slug>     Crea un change set (preview del diff),
 #                                       lo vuelca y lo borra. No cambia nada.
 #   scripts/cfn.sh deploy   <slug>      Despliega el stack (idempotente).
+#   scripts/cfn.sh destroy  <slug>      Borra el stack (idempotente: si no
+#                                       existe, no falla). Si <slug> es "ecr"
+#                                       vacía el repositorio antes, porque
+#                                       CloudFormation no borra un
+#                                       AWS::ECR::Repository con imágenes.
+#   scripts/cfn.sh destroy-all          Borra los 7 stacks CI-managed en orden
+#                                       inverso al de deploy-infra.yml. No
+#                                       toca "bootstrap" (manual).
 #
 # <slug> es el nombre lógico del template (ya no coincide 1:1 con la ruta del
 # archivo: los templates viven repartidos en templates/{bootstrap,infra,app}/
@@ -134,10 +142,53 @@ deploy() {
   echo "${stack} OK."
 }
 
+# Vacía un repo ECR (borra todas las imágenes) para que el delete-stack no
+# falle con "repository not empty".
+empty_ecr() {
+  local repo="$1" digests
+  digests="$(aws ecr list-images --region "$REGION" --repository-name "$repo" \
+    --query 'imageIds[*]' --output json 2>/dev/null || echo '[]')"
+  if [ "$digests" != "[]" ] && [ -n "$digests" ]; then
+    echo "Vaciando repo ECR ${repo}..."
+    aws ecr batch-delete-image --region "$REGION" --repository-name "$repo" \
+      --image-ids "$digests" >/dev/null
+  fi
+}
+
+destroy() {
+  local slug="$1" stack
+  stack="$(stack_name "$slug")"
+  if ! aws cloudformation describe-stacks --region "$REGION" \
+      --stack-name "$stack" >/dev/null 2>&1; then
+    echo "${stack} no existe, nada que borrar."
+    return 0
+  fi
+  if [ "$slug" = "ecr" ]; then
+    empty_ecr "$(aws cloudformation describe-stacks --region "$REGION" \
+      --stack-name "$stack" --query 'Stacks[0].Outputs[?OutputKey==`EcrRepositoryName`].OutputValue' \
+      --output text)"
+  fi
+  echo "Borrando ${stack}..."
+  aws cloudformation delete-stack --region "$REGION" --stack-name "$stack"
+  aws cloudformation wait stack-delete-complete --region "$REGION" --stack-name "$stack"
+  echo "${stack} borrado."
+}
+
+destroy_all() {
+  local i slug
+  for (( i=${#SLUGS[@]}-1; i>=0; i-- )); do
+    slug="${SLUGS[$i]}"
+    [ "$slug" = "bootstrap" ] && continue
+    destroy "$slug"
+  done
+}
+
 cmd="${1:-}"
 case "$cmd" in
-  validate)  validate ;;
-  changeset) changeset "${2:?falta <slug>}" ;;
-  deploy)    deploy "${2:?falta <slug>}" ;;
-  *) echo "uso: scripts/cfn.sh {validate|changeset <slug>|deploy <slug>}" >&2; exit 1 ;;
+  validate)    validate ;;
+  changeset)   changeset "${2:?falta <slug>}" ;;
+  deploy)      deploy "${2:?falta <slug>}" ;;
+  destroy)     destroy "${2:?falta <slug>}" ;;
+  destroy-all) destroy_all ;;
+  *) echo "uso: scripts/cfn.sh {validate|changeset <slug>|deploy <slug>|destroy <slug>|destroy-all}" >&2; exit 1 ;;
 esac

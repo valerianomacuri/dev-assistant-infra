@@ -229,6 +229,11 @@ La lógica de despliegue vive en [`scripts/cfn.sh`](scripts/cfn.sh)
 (`validate` | `changeset <slug>` | `deploy <slug>`), que el workflow ejecuta
 internamente; pasa los params de `params/*.json`.
 
+`scripts/cfn.sh` también tiene `destroy <slug>` y `destroy-all` para borrar stacks. Son
+solo para uso manual desde la terminal (con las credenciales AWS que ya tengas
+configuradas) — el workflow **no** los ejecuta. Ver [Notas](#notas) para el borrado
+completo del entorno.
+
 ## Roadmap: HTTPS + dominio personalizado
 
 Hoy el ALB expone **HTTP:80**. Para servir la API por **HTTPS** en un dominio propio
@@ -294,8 +299,13 @@ tarea pública directa (se pierde el WS gestionado).
 - **Para borrar todo**: elimina **primero a mano** el RDS y su red propia (la instancia
   `dev-assistant-postgres` —con snapshot final si quieres conservar los datos—, luego el DB
   subnet group `dev-assistant-db-subnets` y el security group `dev-assistant-rds-sg`).
-  Después borra los stacks en orden inverso (`backend-service → observability → alb →
-  ecs-cluster → ecr → security → network → cicd-infra`). El stack `cicd-infra` (bootstrap)
-  se puede borrar en
-  cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo template ya
-  no queda ningún `Fn::ImportValue` de otro stack hacia su export `OidcProviderArn`.
+  Después corré `bash scripts/cfn.sh destroy-all`: borra los 7 stacks CI-managed en orden
+  inverso al de despliegue (`backend-service → observability → alb → ecs-cluster → ecr →
+  security → network`), vaciando antes el repo ECR (si no, `delete-stack` falla con
+  "repository not empty") y esperando a que cada borrado termine antes de seguir con el
+  siguiente. No toca `cicd-infra` (bootstrap) a propósito, para no invalidar el rol OIDC
+  mientras el CI todavía lo necesita. Ese stack se borra aparte, a mano
+  (`aws cloudformation delete-stack --stack-name dev-assistant-cicd-infra`), y podés
+  hacerlo en cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo
+  template ya no queda ningún `Fn::ImportValue` de otro stack hacia su export
+  `OidcProviderArn`.
