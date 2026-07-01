@@ -15,3 +15,7 @@ cs.err
 .vscode/
 .idea/
 .DS_Store
+
+# Artefactos del loadtest
+loadtest/payload.txt
+payload.txt
