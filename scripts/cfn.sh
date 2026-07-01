@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Helpers de CloudFormation para el CI/CD de infra (los usa deploy-infra.yml).
 #
-#   scripts/cfn.sh validate             cfn validate-template de los 7 templates.
+#   scripts/cfn.sh validate             cfn validate-template de los 8 templates.
 #   scripts/cfn.sh changeset <slug>     Crea un change set (preview del diff),
 #                                       lo vuelca y lo borra. No cambia nada.
 #   scripts/cfn.sh deploy   <slug>      Despliega el stack (idempotente).
@@ -9,10 +9,20 @@
 #                                       existe, no falla). Si <slug> es "ecr"
 #                                       vacía el repositorio antes, porque
 #                                       CloudFormation no borra un
-#                                       AWS::ECR::Repository con imágenes.
-#   scripts/cfn.sh destroy-all          Borra los 7 stacks CI-managed en orden
+#                                       AWS::ECR::Repository con imágenes. Si
+#                                       <slug> es "rds", el borrado deja un
+#                                       snapshot final (DeletionPolicy: Snapshot
+#                                       en templates/infra/rds.yml).
+#   scripts/cfn.sh destroy-all          Borra los 8 stacks CI-managed en orden
 #                                       inverso al de deploy-infra.yml. No
 #                                       toca "bootstrap" (manual).
+#   scripts/cfn.sh set-database-url     Arma DATABASE_URL con el output
+#                                       RdsEndpointAddress del stack rds y la
+#                                       env var RDS_MASTER_PASSWORD, y lo
+#                                       escribe (SecureString) en SSM
+#                                       /<PROJECT_NAME>/DATABASE_URL. El
+#                                       workflow lo corre justo después de
+#                                       "deploy rds".
 #
 # <slug> es el nombre lógico del template (ya no coincide 1:1 con la ruta del
 # archivo: los templates viven repartidos en templates/{bootstrap,infra,app}/
@@ -20,17 +30,21 @@
 #
 #   bootstrap  (bootstrap MANUAL: OIDC + InfraDeployRole + DeployRole; el CI no
 #              lo despliega, solo lo valida)
-#   network | security | ecr | ecs-cluster | alb | observability | backend-service
+#   network | security | rds | ecr | ecs-cluster | alb | observability | backend-service
 #              (los gestiona el CI, en ese orden: network y security antes de
+#              rds -que importa su VPC/subredes y su Security Group- y antes de
 #              alb; ecs-cluster y alb antes de observability y backend-service)
 #
 # Los params ESTÁTICOS van en params/*.json. Variables: AWS_REGION (def.
-# us-east-1), PROJECT_NAME (def. dev-assistant).
+# us-east-1), PROJECT_NAME (def. dev-assistant). El slug "rds" además necesita
+# la env var RDS_MASTER_PASSWORD (password maestra self-managed; NO vive en
+# params/rds.json ni en git - el workflow la inyecta desde el secret de GitHub
+# RDS_MASTER_PASSWORD).
 set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT="${PROJECT_NAME:-dev-assistant}"
-SLUGS=(bootstrap network security ecr ecs-cluster alb observability backend-service)
+SLUGS=(bootstrap network security rds ecr ecs-cluster alb observability backend-service)
 
 # Mapea slug -> ruta real del template.
 template_path() {
@@ -38,6 +52,7 @@ template_path() {
     bootstrap)       echo "templates/bootstrap/github-oidc.yml" ;;
     network)         echo "templates/infra/network.yaml" ;;
     security)        echo "templates/infra/security.yml" ;;
+    rds)              echo "templates/infra/rds.yml" ;;
     ecr)             echo "templates/infra/ecr.yml" ;;
     ecs-cluster)      echo "templates/infra/ecs-cluster.yml" ;;
     alb)              echo "templates/infra/alb.yml" ;;
@@ -53,6 +68,7 @@ stack_name() {
     bootstrap)       echo "${PROJECT}-cicd-infra" ;;
     network)         echo "${PROJECT}-network" ;;
     security)        echo "${PROJECT}-security" ;;
+    rds)              echo "${PROJECT}-rds" ;;
     ecr)             echo "${PROJECT}-ecr" ;;
     ecs-cluster)      echo "${PROJECT}-ecs-cluster" ;;
     alb)              echo "${PROJECT}-alb" ;;
@@ -60,6 +76,17 @@ stack_name() {
     backend-service)  echo "${PROJECT}-backend-service" ;;
     *) echo "slug desconocido: $1" >&2; return 1 ;;
   esac
+}
+
+# Devuelve "Key=Value" por línea: los params estáticos de params/<slug>.json
+# más, solo para "rds", el MasterUserPassword tomado de la env var
+# RDS_MASTER_PASSWORD (nunca vive en git).
+param_overrides() {
+  local slug="$1"
+  jq -r '.[] | "\(.ParameterKey)=\(.ParameterValue)"' "params/${slug}.json"
+  if [ "$slug" = "rds" ]; then
+    echo "MasterUserPassword=${RDS_MASTER_PASSWORD:?falta la env var RDS_MASTER_PASSWORD}"
+  fi
 }
 stack_caps() {
   case "$1" in
@@ -88,6 +115,11 @@ changeset() {
     cstype=CREATE
   fi
   name="ci-$(date +%s)"
+  local overrides=() cfn_params=()
+  mapfile -t overrides < <(param_overrides "$slug")
+  for kv in "${overrides[@]}"; do
+    cfn_params+=("ParameterKey=${kv%%=*},ParameterValue=${kv#*=}")
+  done
 
   echo "### \`${stack}\` — change set (${cstype})"
   echo ""
@@ -95,7 +127,7 @@ changeset() {
       --region "$REGION" --stack-name "$stack" --change-set-name "$name" \
       --change-set-type "$cstype" \
       --template-body "file://$(template_path "$slug")" \
-      --parameters "file://params/${slug}.json" \
+      --parameters "${cfn_params[@]}" \
       ${caps:+--capabilities $caps} >/dev/null 2>cs.err; then
     echo '_No se pudo crear el change set (¿faltan stacks dependientes aún sin desplegar?):_'
     echo '```'; cat cs.err; echo '```'; echo ""
@@ -131,7 +163,7 @@ deploy() {
   # JSON estructurado -> Key=Value. La expansión con comillas del array evita el
   # word-splitting y el globbing (p.ej. CorsOrigins=*).
   local overrides=()
-  mapfile -t overrides < <(jq -r '.[] | "\(.ParameterKey)=\(.ParameterValue)"' "params/${slug}.json")
+  mapfile -t overrides < <(param_overrides "$slug")
   echo "Desplegando ${stack}..."
   aws cloudformation deploy \
     --region "$REGION" --stack-name "$stack" \
@@ -183,12 +215,36 @@ destroy_all() {
   done
 }
 
+# Compone DATABASE_URL con el Endpoint/Port del stack rds (recién desplegado)
+# y la password de RDS_MASTER_PASSWORD, y lo publica en SSM. Idempotente:
+# sobrescribe el parámetro en cada corrida (--overwrite), así que también
+# mantiene DATABASE_URL al día si el endpoint cambia (p.ej. un reemplazo de
+# la instancia).
+set_database_url() {
+  local stack endpoint port user dbname url param_name
+  stack="$(stack_name rds)"
+  endpoint="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$stack" \
+    --query 'Stacks[0].Outputs[?OutputKey==`RdsEndpointAddress`].OutputValue' --output text)"
+  port="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$stack" \
+    --query 'Stacks[0].Outputs[?OutputKey==`RdsEndpointPort`].OutputValue' --output text)"
+  user="$(jq -r '.[] | select(.ParameterKey=="MasterUsername") | .ParameterValue' params/rds.json)"
+  dbname="$(jq -r '.[] | select(.ParameterKey=="DBName") | .ParameterValue' params/rds.json)"
+  user="${user:-devassistant}"
+  dbname="${dbname:-devassistant}"
+  url="postgresql://${user}:${RDS_MASTER_PASSWORD:?falta la env var RDS_MASTER_PASSWORD}@${endpoint}:${port}/${dbname}"
+  param_name="/${PROJECT}/DATABASE_URL"
+  aws ssm put-parameter --region "$REGION" --name "$param_name" \
+    --type SecureString --overwrite --value "$url" >/dev/null
+  echo "${param_name} actualizado en SSM."
+}
+
 cmd="${1:-}"
 case "$cmd" in
-  validate)    validate ;;
-  changeset)   changeset "${2:?falta <slug>}" ;;
-  deploy)      deploy "${2:?falta <slug>}" ;;
-  destroy)     destroy "${2:?falta <slug>}" ;;
-  destroy-all) destroy_all ;;
-  *) echo "uso: scripts/cfn.sh {validate|changeset <slug>|deploy <slug>|destroy <slug>|destroy-all}" >&2; exit 1 ;;
+  validate)         validate ;;
+  changeset)        changeset "${2:?falta <slug>}" ;;
+  deploy)           deploy "${2:?falta <slug>}" ;;
+  destroy)          destroy "${2:?falta <slug>}" ;;
+  destroy-all)      destroy_all ;;
+  set-database-url) set_database_url ;;
+  *) echo "uso: scripts/cfn.sh {validate|changeset <slug>|deploy <slug>|destroy <slug>|destroy-all|set-database-url}" >&2; exit 1 ;;
 esac

@@ -17,3 +17,10 @@ skip-check:
   - CKV_AWS_88  # recurso con IP pública asignada
   # ECR con tags mutables (se reusa :latest a propósito en este MVP).
   - CKV_AWS_51  # ECR image tag immutability
+  # RDS Single-AZ, sin Enhanced Monitoring/Performance Insights, sin IAM auth
+  # (password self-managed a propósito, ver templates/infra/rds.yml) y sin
+  # exportar logs a CloudWatch: decisiones de costo/complejidad del MVP.
+  - CKV_AWS_157 # RDS Multi-AZ
+  - CKV_AWS_118 # RDS Enhanced Monitoring
+  - CKV_AWS_161 # RDS IAM DB authentication
+  - CKV_AWS_129 # RDS log exports a CloudWatch

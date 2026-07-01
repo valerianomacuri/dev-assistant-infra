@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   dev-assistant-backend - Security: Security Groups for the ALB (public HTTP,
-  HTTPS reserved for the roadmap) and for the Fargate app tasks (only reachable
-  from the ALB, port 3000). Depends on the VPC exported by the network stack.
+  HTTPS reserved for the roadmap), the Fargate app tasks (only reachable from
+  the ALB, port 3000) and RDS (only reachable from the app tasks, port 5432).
+  Depends on the VPC exported by the network stack.
 
 Parameters:
   ProjectName:
@@ -50,6 +51,22 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-app-sg"
 
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS PostgreSQL. Only the app tasks can reach port 5432.
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+          Description: PostgreSQL from the app tasks
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-rds-sg"
+
 Outputs:
   AlbSecurityGroupId:
     Value: !Ref AlbSecurityGroup
@@ -59,3 +76,7 @@ Outputs:
     Value: !Ref AppSecurityGroup
     Export:
       Name: !Sub "${ProjectName}-AppSecurityGroupId"
+  RdsSecurityGroupId:
+    Value: !Ref RdsSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-RdsSecurityGroupId"

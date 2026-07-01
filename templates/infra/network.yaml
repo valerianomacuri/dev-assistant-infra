@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dev-assistant-backend - Network: VPC with 2 public subnets across 2 AZs,
-  Internet Gateway and public routing. Fargate uses a public IP for direct
-  egress to the Internet, avoiding a NAT Gateway. Security Groups live in the
-  security stack. RDS is managed outside this stack.
+  dev-assistant-backend - Network: VPC with 2 public subnets (ALB + Fargate,
+  across 2 AZs) plus 2 private subnets (RDS, no route to the Internet Gateway
+  - no NAT Gateway needed since RDS doesn't need outbound Internet access),
+  Internet Gateway and routing. Security Groups live in the security stack.
 
 Parameters:
   ProjectName:
@@ -91,6 +91,50 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet2
 
+  # --- Private subnets (RDS) ---
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-private-1"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-private-2"
+
+  # --- Private routing (no route to the Internet Gateway) ---
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-private-rt"
+
+  PrivateSubnet1RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
 Outputs:
   VpcId:
     Value: !Ref Vpc
@@ -104,3 +148,11 @@ Outputs:
     Value: !Ref PublicSubnet2
     Export:
       Name: !Sub "${ProjectName}-PublicSubnet2"
+  PrivateSubnet1:
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "${ProjectName}-PrivateSubnet1"
+  PrivateSubnet2:
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${ProjectName}-PrivateSubnet2"

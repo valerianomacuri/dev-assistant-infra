@@ -3,14 +3,21 @@ name: Deploy infra
 # CI/CD de la infraestructura (CloudFormation).
 #   - En cada PR: lint (cfn-lint) + seguridad (checkov) + validate-template, y un
 #     "plan" que crea change sets para previsualizar el diff (sin cambiar nada).
-#   - En push a main: despliega network -> security -> ecr -> ecs-cluster -> alb
-#     -> observability -> backend-service, tras la aprobación manual del
+#   - En push a main: despliega network -> security -> rds -> ecr -> ecs-cluster
+#     -> alb -> observability -> backend-service, tras la aprobación manual del
 #     Environment `production`.
 # El stack de bootstrap (OIDC + InfraDeployRole + DeployRole, templates/bootstrap/
 # github-oidc.yml) NO lo gestiona el CI: define los propios roles que aquí se
 # asumen, así que se despliega a mano.
 # Autenticación con AWS vía GitHub OIDC (sin llaves estáticas): el rol a asumir
 # (InfraDeployRole) lo crea el stack `bootstrap`.
+# El stack `rds` necesita además el secret RDS_MASTER_PASSWORD (password
+# maestra self-managed, nunca en params/*.json - ver scripts/cfn.sh). Justo
+# después de desplegarlo, "Set DATABASE_URL in SSM" arma la connection string
+# con su Output RdsEndpointAddress + esa misma password y la publica en SSM
+# (/dev-assistant/DATABASE_URL) - sin paso manual. Requiere que InfraDeployRole
+# (stack bootstrap) tenga los permisos rds:* y ssm:PutParameter agregados en
+# templates/bootstrap/github-oidc.yml.
 
 on:
   pull_request:
@@ -72,11 +79,13 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Change set preview
+        env:
+          RDS_MASTER_PASSWORD: ${{ secrets.RDS_MASTER_PASSWORD }}
         run: |
           {
             echo "## Plan de infraestructura (change sets)"
             echo ""
-            for slug in network security ecr ecs-cluster alb observability backend-service; do
+            for slug in network security rds ecr ecs-cluster alb observability backend-service; do
               bash scripts/cfn.sh changeset "$slug"
             done
           } | tee plan.md >> "$GITHUB_STEP_SUMMARY"
@@ -103,15 +112,24 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # El bootstrap (OIDC + InfraDeployRole + DeployRole) ya está desplegado a
-      # mano. El CI no lo toca. Orden: network y security antes que alb (alb
-      # importa el SG y las subredes); ecs-cluster y alb antes que
-      # observability (importa ClusterName, BackendLogGroupName,
-      # LoadBalancerFullName y TargetGroupFullName) y backend-service (importa
-      # el cluster y el target group).
+      # mano. El CI no lo toca. Orden: network y security antes que rds (rds
+      # importa las subredes privadas y el SG) y que alb (alb importa el SG y
+      # las subredes públicas); ecs-cluster y alb antes que observability
+      # (importa ClusterName, BackendLogGroupName, LoadBalancerFullName y
+      # TargetGroupFullName) y backend-service (importa el cluster y el target
+      # group).
       - name: Deploy network
         run: bash scripts/cfn.sh deploy network
       - name: Deploy security
         run: bash scripts/cfn.sh deploy security
+      - name: Deploy rds
+        env:
+          RDS_MASTER_PASSWORD: ${{ secrets.RDS_MASTER_PASSWORD }}
+        run: bash scripts/cfn.sh deploy rds
+      - name: Set DATABASE_URL in SSM
+        env:
+          RDS_MASTER_PASSWORD: ${{ secrets.RDS_MASTER_PASSWORD }}
+        run: bash scripts/cfn.sh set-database-url
       - name: Deploy ecr
         run: bash scripts/cfn.sh deploy ecr
       - name: Deploy ecs-cluster

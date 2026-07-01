@@ -119,6 +119,49 @@ Resources:
                   - ssm:GetParameters
                   - ssm:GetParameter
                 Resource: "*"
+        - PolicyName: rds-resources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Describe/list actions do not support resource-level scoping.
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBSubnetGroups
+                  - rds:ListTagsForResource
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - rds:CreateDBInstance
+                  - rds:DeleteDBInstance
+                  - rds:ModifyDBInstance
+                  - rds:AddTagsToResource
+                  - rds:RemoveTagsFromResource
+                Resource: !Sub "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:db:${ProjectName}-*"
+              - Effect: Allow
+                Action:
+                  - rds:CreateDBSubnetGroup
+                  - rds:DeleteDBSubnetGroup
+                  - rds:ModifyDBSubnetGroup
+                Resource: !Sub "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:subgrp:${ProjectName}-*"
+        - PolicyName: rds-database-url
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lets the CI compose DATABASE_URL (RdsEndpointAddress output +
+              # RDS_MASTER_PASSWORD secret) and write it to SSM right after
+              # deploying rds - see scripts/cfn.sh (set-database-url).
+              - Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/DATABASE_URL"
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
         - PolicyName: iam-named-roles
           PolicyDocument:
             Version: "2012-10-17"

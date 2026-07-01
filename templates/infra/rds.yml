@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  dev-assistant-backend - RDS: PostgreSQL instance in the private subnets
+  (network stack), reachable only from the app tasks (RdsSecurityGroupId,
+  security stack). Single-AZ, self-managed master password (no Secrets
+  Manager - the app connects as master so LangChain can create the pgvector
+  extension). The DBInstance keeps DeletionPolicy/UpdateReplacePolicy:
+  Snapshot so a delete or replacement always leaves a final snapshot.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: dev-assistant
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  AllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: Storage in GB (gp3).
+  EngineVersion:
+    Type: String
+    Default: "16.4"
+  MultiAZ:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  BackupRetentionPeriod:
+    Type: Number
+    Default: 7
+    Description: Days of automated backups.
+  DBName:
+    Type: String
+    Default: devassistant
+    Description: Initial database name.
+  MasterUsername:
+    Type: String
+    Default: devassistant
+  MasterUserPassword:
+    Type: String
+    NoEcho: true
+    Description: >
+      Self-managed master password. No default on purpose: it must never be
+      committed to params/*.json. The CI injects it from the RDS_MASTER_PASSWORD
+      GitHub secret (see scripts/cfn.sh).
+
+Resources:
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "${ProjectName}-db-subnets"
+      DBSubnetGroupDescription: Private subnets for RDS (no route to the Internet Gateway).
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectName}-PrivateSubnet1"
+        - Fn::ImportValue: !Sub "${ProjectName}-PrivateSubnet2"
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-postgres"
+      Engine: postgres
+      EngineVersion: !Ref EngineVersion
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref AllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: !Ref MultiAZ
+      DBName: !Ref DBName
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterUserPassword
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub "${ProjectName}-RdsSecurityGroupId"
+      PubliclyAccessible: false
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-postgres"
+
+Outputs:
+  RdsEndpointAddress:
+    Description: >
+      RDS endpoint. scripts/cfn.sh set-database-url composes DATABASE_URL from
+      this + MasterUserPassword and writes it to SSM
+      (/dev-assistant/DATABASE_URL) right after this stack deploys.
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${ProjectName}-RdsEndpointAddress"
+  RdsEndpointPort:
+    Value: !GetAtt DBInstance.Endpoint.Port
+    Export:
+      Name: !Sub "${ProjectName}-RdsEndpointPort"

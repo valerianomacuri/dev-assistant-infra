@@ -13,35 +13,38 @@ NestJS con PostgreSQL + pgvector y WebSockets. Optimizada como **MVP** y despleg
 ```
 Internet ──HTTP:80──> ALB (público) ──HTTP:3000──> ECS Fargate (subred pública, IP pública)
                                                           │ (egress directo por IGW, sin NAT)
-                                                          └──5432──> RDS PostgreSQL 16 (red propia, externa al stack)
+                                                          └──5432──> RDS PostgreSQL 16 (subred privada, mismo VPC)
 ```
 
 - **Hoy la API se expone por HTTP.** HTTPS con dominio personalizado está planificado
   (ver [Roadmap: HTTPS + dominio](#roadmap-https--dominio-personalizado)).
 - **Fargate en subredes públicas con IP pública** → evita el costo de un NAT Gateway
   (~US$32/mes). El Security Group de la app solo acepta tráfico del ALB en el 3000.
-- **RDS** no es público: se accede solo desde el SG de la app. **Se crea por consola con
-  su propia red** (DB subnet group + security group manuales) y **no forma parte de
-  ningún stack**.
+- **RDS** vive en **subredes privadas** dedicadas (sin ruta a Internet — no hace falta
+  NAT porque RDS no necesita salida a Internet) y solo se accede desde el SG de la app.
+  Es un stack más de CloudFormation (`rds`, ver [Stacks](#stacks-9-capas)): la instancia
+  mantiene `DeletionPolicy`/`UpdateReplacePolicy: Snapshot`, así que un borrado o
+  reemplazo siempre deja un snapshot final.
 - **WebSockets** de socket.io funcionan de forma nativa sobre el ALB, con _stickiness_
   para el _fallback_ de long-polling.
 - **Secretos**: las 4 variables sensibles (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `JWT_SECRET`, `DATABASE_URL`) viven en **SSM Parameter Store** (SecureString, gratis).
   No se usa Secrets Manager.
 
-## Stacks (8 capas)
+## Stacks (9 capas)
 
-Se enlazan con `Export` / `ImportValue`. **RDS no es un stack.** El único stack manual es
-`bootstrap` (`templates/bootstrap/github-oidc.yml`): crea el proveedor OIDC de GitHub y
-**los dos roles** que asumen el CI de infra y el CI del backend (ya no están en stacks
-separados). Los otros 7 los gestiona el CI, en este orden de dependencias:
-`network → security → ecr → ecs-cluster → alb → observability → backend-service`.
+Se enlazan con `Export` / `ImportValue`. El único stack manual es `bootstrap`
+(`templates/bootstrap/github-oidc.yml`): crea el proveedor OIDC de GitHub y **los dos
+roles** que asumen el CI de infra y el CI del backend (ya no están en stacks
+separados). Los otros 8 los gestiona el CI, en este orden de dependencias:
+`network → security → rds → ecr → ecs-cluster → alb → observability → backend-service`.
 
 | Plantilla | Stack | Despliega | Qué crea |
 |-----------|-------|-----------|----------|
 | `templates/bootstrap/github-oidc.yml` | `dev-assistant-cicd-infra` | **Manual (consola)** | Proveedor **OIDC** de GitHub (único por cuenta), el **`InfraDeployRole`** que asume el CI de infra y el **`DeployRole`** que asume el CI del backend. |
-| `templates/infra/network.yaml` | `dev-assistant-network` | CI | VPC `10.20.0.0/16`, 2 subredes públicas (2 AZ), Internet Gateway y rutas. Exporta `VpcId`, `PublicSubnet1`, `PublicSubnet2`. |
-| `templates/infra/security.yml` | `dev-assistant-security` | CI | Security Groups `alb-sg` y `app-sg`. Importa `VpcId`. Exporta `AlbSecurityGroupId`, `AppSecurityGroupId`. |
+| `templates/infra/network.yaml` | `dev-assistant-network` | CI | VPC `10.20.0.0/16`, 2 subredes públicas (ALB/Fargate, 2 AZ) + 2 subredes privadas (RDS, sin ruta a Internet), Internet Gateway y rutas. Exporta `VpcId`, `PublicSubnet1/2`, `PrivateSubnet1/2`. |
+| `templates/infra/security.yml` | `dev-assistant-security` | CI | Security Groups `alb-sg`, `app-sg` y `rds-sg`. Importa `VpcId`. Exporta `AlbSecurityGroupId`, `AppSecurityGroupId`, `RdsSecurityGroupId`. |
+| `templates/infra/rds.yml` | `dev-assistant-rds` | CI | **RDS PostgreSQL 16**, Single-AZ, en las subredes privadas (importa `PrivateSubnet1/2` y `RdsSecurityGroupId`). Password maestra self-managed inyectada por `RDS_MASTER_PASSWORD` (secret de GitHub). La instancia tiene `DeletionPolicy`/`UpdateReplacePolicy: Snapshot`. Exporta `RdsEndpointAddress`, `RdsEndpointPort`. |
 | `templates/infra/ecr.yml` | `dev-assistant-ecr` | CI | Repositorio **ECR** de la imagen del backend. |
 | `templates/infra/ecs-cluster.yml` | `dev-assistant-ecs-cluster` | CI | **Cluster ECS**, log group de CloudWatch y el rol de ejecución de la tarea. Exporta `ClusterName`, `BackendLogGroupName`, `ExecutionRoleArn`. |
 | `templates/infra/alb.yml` | `dev-assistant-alb` | CI | **ALB** (HTTP + WS) y su Target Group. Importa `AlbSecurityGroupId`, `PublicSubnet1/2`, `VpcId`. Exporta `AlbDnsName`, `TargetGroupArn`, `LoadBalancerFullName`, `TargetGroupFullName`. |
@@ -58,18 +61,32 @@ separados). Los otros 7 los gestiona el CI, en este orden de dependencias:
   a mano. El proveedor OIDC es **único por cuenta**: este stack asume que la cuenta aún no
   tiene uno de GitHub.
 - **network**: la decisión de costo está aquí — Fargate vive en subredes **públicas**
-  (`MapPublicIpOnLaunch`) y sale a Internet por el IGW, evitando el NAT Gateway. El RDS
-  **no** está aquí (trae su propia red, ver
-  [Crear RDS](#paso-por-consola--crear-rds-postgresql)).
-- **security**: `app-sg` solo deja entrar al ALB (puerto 3000); depende del `VpcId` que
-  exporta `network`.
+  (`MapPublicIpOnLaunch`) y sale a Internet por el IGW, evitando el NAT Gateway. Las 2
+  subredes **privadas** (sin ruta al Internet Gateway) son solo para RDS: no necesitan
+  NAT porque RDS no requiere salida a Internet.
+- **security**: `app-sg` solo deja entrar al ALB (puerto 3000); `rds-sg` solo deja entrar
+  a `app-sg` (puerto 5432). Ambos dependen del `VpcId` que exporta `network`.
+- **rds**: Single-AZ, `db.t4g.micro`, 20 GB gp3, backups de 7 días, sin Performance
+  Insights ni Enhanced Monitoring (costo/complejidad de MVP, ver `.checkov.yaml`). La
+  password maestra es **self-managed** (no Secrets Manager, igual que el diseño previo):
+  la inyecta el secret de GitHub `RDS_MASTER_PASSWORD` (ver
+  [Puesta en marcha](#puesta-en-marcha-una-sola-vez) y `scripts/cfn.sh`), nunca vive en
+  `params/*.json`. `DeletionPolicy`/`UpdateReplacePolicy: Snapshot` en el `DBInstance`
+  garantiza que un borrado o reemplazo (p.ej. cambiar `DBInstanceIdentifier` o el motor)
+  siempre deje un **snapshot final** — hay que borrarlo a mano si no se quiere seguir
+  pagando su almacenamiento (ver [Notas](#notas)). Inmediatamente después de desplegar
+  este stack, el workflow corre `scripts/cfn.sh set-database-url`: arma `DATABASE_URL`
+  con el output `RdsEndpointAddress` + `RDS_MASTER_PASSWORD` y lo publica (SecureString)
+  en `/dev-assistant/DATABASE_URL` — es idempotente y también mantiene el parámetro al
+  día si el endpoint cambia (p.ej. tras un reemplazo).
 - **ecs-cluster** / **alb** / **backend-service**: la tarea corre con
   `assignPublicIp: ENABLED`, `enableExecuteCommand: true` (depuración con ECS Exec) y
   _circuit breaker_ con rollback. Lee los 4 secretos desde SSM `/dev-assistant/*`.
   **`DesiredCount` arranca en 0** a propósito: no hay imagen en ECR hasta que el CI/CD del
   backend publica la primera, y es ese CI/CD el que activa las tareas.
-- **observability**: cubre ECS + ALB + logs; **RDS queda fuera** porque no es un stack
-  (se crea a mano, ver [Crear RDS](#paso-por-consola--crear-rds-postgresql)). El parámetro
+- **observability**: cubre ECS + ALB + logs; **RDS queda fuera** de las alarmas/dashboard
+  en esta fase (no tiene métricas propias configuradas todavía, aunque ya es un stack de
+  CloudFormation). El parámetro
   `AlarmEmail` (en `params/observability.json`) está vacío por defecto — sin él no se crea
   la suscripción SNS y las alarmas no notifican a nadie. Al completarlo y desplegar, AWS
   manda un mail de confirmación al endpoint que **hay que confirmar a mano** (si no, SNS
@@ -104,85 +121,64 @@ cuenta/entorno viven en `params/*.json`.
    sube `templates/bootstrap/github-oidc.yml`. Nombre de stack `dev-assistant-cicd-infra`,
    reconoce la capacidad **IAM con nombres personalizados** (NAMED_IAM) y crea el stack.
    En la pestaña **Outputs** copia `InfraDeployRoleArn` y `DeployRoleArn`.
+   > Si este stack **ya existía** de antes (sin el stack `rds`), hay que **actualizarlo**
+   > a mano con la versión actual de `github-oidc.yml` (Update stack → Replace current
+   > template) antes del paso 3: `InfraDeployRole` ahora también necesita los permisos
+   > `rds:*` y `ssm:PutParameter` que usan el stack `rds` y `set-database-url`.
 
 2. **Configura este repositorio en GitHub** (Settings → Secrets and variables → Actions):
    - **Secret** `AWS_DEPLOY_ROLE_ARN` = `InfraDeployRoleArn` del paso 1.
+   - **Secret** `RDS_MASTER_PASSWORD` = una contraseña fuerte que elijas vos (nunca va en
+     `params/*.json` ni en git). El stack `rds` la usa como password maestra self-managed
+     de la instancia, y el CI la reusa para componer `DATABASE_URL` automáticamente
+     (ver paso 3).
    - **Variables**: `AWS_REGION` = `us-east-1`, `PROJECT_NAME` = `dev-assistant`.
    - En **Settings → Environments** crea `production` y añade _Required reviewers_ (gate de
      aprobación antes de cada deploy).
 
 3. **Sube el repo y deja que el CI despliegue.** Con la rama `main` en GitHub, el push
    dispara el workflow: tras la aprobación del Environment `production`, despliega
-   `network → security → ecr → ecs-cluster → alb → observability → backend-service`. El
-   servicio queda con **0 tareas** (aún sin imagen). Si querés recibir alarmas por email,
-   completá `AlarmEmail` en `params/observability.json` antes de este paso (o después, con
-   un redeploy del stack `observability`) y confirmá el mail que manda SNS.
+   `network → security → rds → ecr → ecs-cluster → alb → observability →
+   backend-service`. Justo después de `rds`, el paso **"Set DATABASE_URL in SSM"** arma la
+   connection string con el output `RdsEndpointAddress` + `RDS_MASTER_PASSWORD` y la
+   publica en `/dev-assistant/DATABASE_URL` — sin pasos manuales. El servicio ECS queda con
+   **0 tareas** (aún sin imagen). Si querés recibir alarmas por email, completá
+   `AlarmEmail` en `params/observability.json` antes de este paso (o después, con un
+   redeploy del stack `observability`) y confirmá el mail que manda SNS.
 
-4. **Crea el RDS por consola** (ver [Crear RDS](#paso-por-consola--crear-rds-postgresql))
-   con su propia red. Copia su **Endpoint**.
+4. **Crea los 3 secretos restantes en SSM por consola** (ver
+   [Secretos en SSM](#paso-por-consola--secretos-en-ssm-parameter-store)): `DATABASE_URL`
+   ya lo dejó el CI en el paso 3.
 
-5. **Crea los 4 secretos en SSM por consola** (ver
-   [Secretos en SSM](#paso-por-consola--secretos-en-ssm-parameter-store)), incluido
-   `/dev-assistant/DATABASE_URL` con el endpoint del RDS.
-
-6. **Configura el repositorio del backend en GitHub** (ver
+5. **Configura el repositorio del backend en GitHub** (ver
    [Variables y secretos del backend](#variables-y-secretos-de-github-backend)) con el
    output `DeployRoleArn` del paso 1 y los outputs de los stacks `ecs-cluster` y
    `backend-service`.
 
-7. **Primer despliegue del backend.** El CI/CD del backend construye la imagen, la publica
+6. **Primer despliegue del backend.** El CI/CD del backend construye la imagen, la publica
    en ECR y **activa la tarea** del servicio. A partir de aquí la API responde por
    `http://<AlbDnsName>` (output del stack `service`).
 
-## Paso por consola — Crear RDS PostgreSQL
-
-RDS **no** está en CloudFormation; se crea a mano con su **propia red**. Reutiliza la VPC
-del stack `01` (`dev-assistant-vpc`), pero el subnet group y el security group del RDS se
-crean **manualmente** (no salen de ningún stack).
-
-1. **EC2 → Security Groups → Create security group**: nombre `dev-assistant-rds-sg`, VPC
-   `dev-assistant-vpc`. Una regla **inbound**: tipo **PostgreSQL** (TCP 5432) con
-   **Source = el SG de la app** (`dev-assistant-app-sg`, el del output `AppSecurityGroupId`
-   del stack `01`). Sin otras reglas.
-2. **RDS → Subnet groups → Create DB subnet group**: nombre `dev-assistant-db-subnets`,
-   VPC `dev-assistant-vpc`, con subredes en **2 AZ**. Para el MVP usa las **2 subredes
-   públicas** del stack (`dev-assistant-public-1`, `dev-assistant-public-2`) y deja
-   **Public access = No** (el acceso lo restringe el SG, no la subred).
-3. **RDS → Databases → Create database** → **Standard create**:
-   - Engine **PostgreSQL** (16.x) · Template **Dev/Test**.
-   - DB instance identifier `dev-assistant-postgres`.
-   - **Master username** `devassistant` · **Credentials = Self managed** → define una
-     contraseña y **anótala** (no uses "managed in Secrets Manager", así puedes componer el
-     `DATABASE_URL`).
-   - Instance class **db.t4g.micro** · Storage **gp3 20 GB** (sin autoscaling) · **Single-AZ**.
-   - Connectivity: VPC `dev-assistant-vpc` · DB subnet group `dev-assistant-db-subnets` ·
-     **Public access = No** · **Existing VPC security group → `dev-assistant-rds-sg`**
-     (quita el `default`).
-   - Additional configuration: **Initial database name** `devassistant` · Backups 7 días ·
-     **Performance Insights = off** · **Enhanced monitoring = off**.
-4. **Create database** → espera a **Available** → copia el **Endpoint**.
-
-> La app conecta con el **usuario master** a propósito: LangChain necesita ese privilegio
-> para crear la extensión `vector` (pgvector) en el primer uso del RAG.
-
 ## Paso por consola — Secretos en SSM Parameter Store
 
-La app necesita 4 secretos que **no** van en CloudFormation. Créalos en la consola web,
-una sola vez:
+La app necesita 3 secretos más que **no** van en CloudFormation (`DATABASE_URL` ya lo
+escribe el CI automáticamente tras desplegar `rds`, ver [Puesta en marcha](#puesta-en-marcha-una-sola-vez)).
+Créalos en la consola web, una sola vez:
 
 1. Consola AWS → **Systems Manager → Parameter Store → Create parameter**.
 2. Crea uno por cada **Name**:
    - `/dev-assistant/ANTHROPIC_API_KEY`
    - `/dev-assistant/OPENAI_API_KEY`
    - `/dev-assistant/JWT_SECRET` (valor largo y aleatorio)
-   - `/dev-assistant/DATABASE_URL` =
-     `postgresql://devassistant:<password>@<endpoint-rds>:5432/devassistant`
 3. En cada uno: **Tier** = Standard · **Type** = **SecureString** · **KMS key source** =
    _My current account_ con `alias/aws/ssm` (default) · pega el valor en **Value** →
    **Create parameter**.
 
 > El rol de ejecución de ECS ya tiene permiso de lectura sobre `/dev-assistant/*`, que
-> cubre los 4 secretos.
+> cubre los 4 secretos (los 3 de acá más `DATABASE_URL`).
+
+> La app conecta con el **usuario master** a propósito: LangChain necesita ese privilegio
+> para crear la extensión `vector` (pgvector) en el primer uso del RAG.
 
 ## Variables y secretos de GitHub (backend)
 
@@ -214,8 +210,9 @@ normal es por **Pull Request**.
   `validate-template`, y un **plan** que crea _change sets_ para previsualizar el diff de
   cada stack y lo publica como comentario del PR. **No cambia nada.**
 - **En push a `main`** (o `workflow_dispatch`): despliega en orden
-  `network → security → ecr → ecs-cluster → alb → backend-service` tras la **aprobación
-  manual** del Environment `production`. Idempotente (`--no-fail-on-empty-changeset`).
+  `network → security → rds → ecr → ecs-cluster → alb → observability →
+  backend-service` tras la **aprobación manual** del Environment `production`.
+  Idempotente (`--no-fail-on-empty-changeset`).
 
 > El stack `bootstrap` (`dev-assistant-cicd-infra`) **no lo gestiona el CI** (define los
 > propios roles `InfraDeployRole`/`DeployRole` que el CI asume): se valida en cada PR pero
@@ -223,7 +220,10 @@ normal es por **Pull Request**.
 
 > La imagen se mantiene en `:latest` (constante), así que redeployar la infra **no
 > revierte** la imagen: el rollout real por SHA lo maneja el workflow del backend. El CI
-> de infra **no** crea RDS ni los secretos de SSM (son manuales por diseño).
+> de infra crea el RDS (stack `rds`) y también escribe `DATABASE_URL` en SSM
+> automáticamente; los otros 3 secretos (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+> `JWT_SECRET`) siguen siendo manuales por diseño (ver
+> [Secretos en SSM](#paso-por-consola--secretos-en-ssm-parameter-store)).
 
 La lógica de despliegue vive en [`scripts/cfn.sh`](scripts/cfn.sh)
 (`validate` | `changeset <slug>` | `deploy <slug>`), que el workflow ejecuta
@@ -267,6 +267,11 @@ Hoy el ALB expone **HTTP:80**. Para servir la API por **HTTPS** en un dominio pr
 > Con `DesiredCount: 0` y sin imagen, el costo de Fargate es **US$0** hasta que el CI/CD
 > del backend activa la tarea.
 
+> Al borrar o reemplazar el `DBInstance` (stack `rds`), `DeletionPolicy`/
+> `UpdateReplacePolicy: Snapshot` deja un **snapshot final** en AWS (~US$0.095/GB-mes, unos
+> US$1.90/mes para 20 GB) que sigue facturando hasta que lo borres a mano — ver
+> [Notas](#notas).
+
 **Palancas de ahorro** (no activadas): `FARGATE_SPOT` (~70% menos cómputo, con riesgo de
 interrupción), apagar la tarea de noche con scheduled scaling, o reemplazar el ALB por una
 tarea pública directa (se pierde el WS gestionado).
@@ -274,8 +279,8 @@ tarea pública directa (se pierde el WS gestionado).
 ## Verificación end-to-end
 
 1. **Stacks OK**: en la consola de **CloudFormation**, los stacks `network`, `security`,
-   `ecr`, `ecs-cluster`, `alb`, `observability` y `backend-service` en `CREATE_COMPLETE` /
-   `UPDATE_COMPLETE`.
+   `rds`, `ecr`, `ecs-cluster`, `alb`, `observability` y `backend-service` en
+   `CREATE_COMPLETE` / `UPDATE_COMPLETE`.
 2. **Salud**: `curl http://<AlbDnsName>/health` → `{"status":"ok"}` (valida ALB + tarea
    sana). Usa el output `AlbDnsName` del stack `alb`.
 3. **Logs**: CloudWatch → `/ecs/dev-assistant-backend`. Debe verse que las **migraciones
@@ -296,15 +301,17 @@ tarea pública directa (se pierde el WS gestionado).
 - **pgvector** no requiere pasos manuales: la extensión `vector` y la tabla `chunks` las
   crea LangChain (`PGVectorStore`) en el primer uso del RAG, con las credenciales master de
   RDS.
-- **Para borrar todo**: elimina **primero a mano** el RDS y su red propia (la instancia
-  `dev-assistant-postgres` —con snapshot final si quieres conservar los datos—, luego el DB
-  subnet group `dev-assistant-db-subnets` y el security group `dev-assistant-rds-sg`).
-  Después corré `bash scripts/cfn.sh destroy-all`: borra los 7 stacks CI-managed en orden
-  inverso al de despliegue (`backend-service → observability → alb → ecs-cluster → ecr →
-  security → network`), vaciando antes el repo ECR (si no, `delete-stack` falla con
-  "repository not empty") y esperando a que cada borrado termine antes de seguir con el
-  siguiente. No toca `cicd-infra` (bootstrap) a propósito, para no invalidar el rol OIDC
-  mientras el CI todavía lo necesita. Ese stack se borra aparte, a mano
+- **Para borrar todo**: corré `bash scripts/cfn.sh destroy-all` (`destroy` usa
+  `delete-stack`, que no necesita parámetros, así que no hace falta `RDS_MASTER_PASSWORD`
+  para borrar). Borra los 8 stacks CI-managed en orden inverso al de despliegue
+  (`backend-service →
+  observability → alb → ecs-cluster → ecr → rds → security → network`), vaciando antes
+  el repo ECR (si no, `delete-stack` falla con "repository not empty") y esperando a que
+  cada borrado termine antes de seguir con el siguiente. Al borrar el stack `rds`,
+  `DeletionPolicy: Snapshot` deja un **snapshot final** de la instancia — si no querés
+  seguir pagando su almacenamiento, borralo a mano después desde **RDS → Snapshots**. No
+  toca `cicd-infra` (bootstrap) a propósito, para no invalidar el rol OIDC mientras el CI
+  todavía lo necesita. Ese stack se borra aparte, a mano
   (`aws cloudformation delete-stack --stack-name dev-assistant-cicd-infra`), y podés
   hacerlo en cualquier momento: al fusionar `InfraDeployRole` y `DeployRole` en el mismo
   template ya no queda ningún `Fn::ImportValue` de otro stack hacia su export
